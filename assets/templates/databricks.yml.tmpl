@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=bundle_config_schema.json
+#
+# Databricks Asset Bundles configuration
+# Migrated from Airflow DAG: <DAG_ID>
+# Migration date: <DATE>
+
+bundle:
+  name: <BUNDLE_NAME>
+
+include:
+  - resources/*.yml
+
+variables:
+  spark_version:
+    description: Spark runtime version
+    default: "15.4.x-scala2.12"
+  node_type_id:
+    description: Cluster node type
+    default: "i3.xlarge"
+  warehouse_id:
+    description: SQL warehouse ID for SQL tasks
+    default: "<WAREHOUSE_ID>"
+
+targets:
+  dev:
+    mode: development
+    workspace:
+      host: <DEV_WORKSPACE_URL>
+  prod:
+    mode: production
+    workspace:
+      host: <PROD_WORKSPACE_URL>
+    run_as:
+      service_principal_name: <SERVICE_PRINCIPAL>

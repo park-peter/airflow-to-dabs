@@ -1,0 +1,52 @@
+# Job resource definition
+# Migrated from Airflow DAG: <DAG_ID>
+
+resources:
+  jobs:
+    <JOB_KEY>:
+      name: <JOB_NAME>
+      description: "Migrated from Airflow DAG: <DAG_ID>"
+      tags:
+        source: airflow-migration
+        original_dag: <DAG_ID>
+      max_concurrent_runs: 1
+
+      # Schedule -- replace with actual cron or trigger
+      # schedule:
+      #   quartz_cron_expression: "<QUARTZ_CRON>"
+      #   timezone_id: "<TIMEZONE>"
+      #   pause_status: UNPAUSED
+
+      # OR Trigger -- uncomment if sensor-driven
+      # trigger:
+      #   file_arrival:
+      #     url: "<EXTERNAL_LOCATION_URL>"
+      #     min_time_between_triggers_seconds: 60
+
+      # Job-level notifications
+      # email_notifications:
+      #   on_failure:
+      #     - "<EMAIL>"
+
+      # Job parameters (accessible by all tasks)
+      # parameters:
+      #   - name: run_date
+      #     default: "{{job.start_time.iso_date}}"
+
+      # Shared cluster definition
+      job_clusters:
+        - job_cluster_key: main-cluster
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 2
+
+      tasks:
+        # --- Task: <TASK_KEY> ---
+        # Airflow operator: <OPERATOR_TYPE>
+        - task_key: <TASK_KEY>
+          job_cluster_key: main-cluster
+          # depends_on:
+          #   - task_key: <UPSTREAM_TASK_KEY>
+          notebook_task:
+            notebook_path: ../src/<TASK_KEY>.py

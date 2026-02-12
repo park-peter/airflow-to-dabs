@@ -1,0 +1,486 @@
+# Databricks Asset Bundles YAML Schema Reference
+
+Condensed reference for generating DABs configuration files. Covers all task types, triggers, clusters, and job-level configuration supported as of Jan 2026.
+
+---
+
+## Top-Level Structure: `databricks.yml`
+
+```yaml
+bundle:
+  name: <bundle-name>
+
+include:
+  - resources/*.yml
+
+variables:
+  spark_version:
+    description: Spark runtime version
+    default: "15.4.x-scala2.12"
+  node_type_id:
+    description: Cluster node type
+    default: "i3.xlarge"
+  warehouse_id:
+    description: SQL warehouse ID for SQL tasks
+    default: ""
+
+targets:
+  dev:
+    mode: development
+    workspace:
+      host: ${var.dev_workspace_url}
+  prod:
+    mode: production
+    workspace:
+      host: ${var.prod_workspace_url}
+    run_as:
+      service_principal_name: ${var.service_principal}
+```
+
+---
+
+## Job Resource Definition
+
+Defined in `resources/*.yml` files, included by `databricks.yml`.
+
+```yaml
+resources:
+  jobs:
+    <job-key>:
+      name: <human-readable-name>
+      description: <optional description>
+      tags:
+        team: data-engineering
+        source: airflow-migration
+      max_concurrent_runs: 1
+      timeout_seconds: 3600
+
+      # Schedule (see Schedule section below)
+      schedule:
+        quartz_cron_expression: "0 0 8 * * ?"
+        timezone_id: "America/New_York"
+        pause_status: UNPAUSED
+
+      # OR Trigger (see Trigger section below)
+      trigger:
+        file_arrival:
+          url: <unity-catalog-external-location-or-volume-url>
+
+      # Email notifications (job-level)
+      email_notifications:
+        on_start:
+          - "team@example.com"
+        on_success:
+          - "team@example.com"
+        on_failure:
+          - "oncall@example.com"
+
+      # Job parameters (accessible by all tasks)
+      parameters:
+        - name: run_date
+          default: "{{job.start_time.iso_date}}"
+        - name: env
+          default: "dev"
+
+      # Shared cluster definitions
+      job_clusters:
+        - job_cluster_key: shared-cluster
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 2
+            spark_conf:
+              spark.sql.shuffle.partitions: "200"
+            spark_env_vars:
+              ENV: "{{job.parameters.env}}"
+
+      # Task list
+      tasks:
+        - task_key: <task-key>
+          # ... task definition (see Task Types below)
+```
+
+---
+
+## Task Types
+
+Each task must have exactly one task type field (e.g., `notebook_task`, `sql_task`). All tasks share these common fields:
+
+### Common Task Fields
+
+```yaml
+- task_key: <unique-identifier>            # Required. 1-100 chars, [a-zA-Z0-9_-]
+  description: <optional description>
+  depends_on:                              # Optional dependency list
+    - task_key: <upstream-task-key>
+      outcome: "true"                      # Only for condition_task dependencies
+  timeout_seconds: 3600                    # 0 = no timeout
+  run_if: ALL_SUCCESS                      # ALL_SUCCESS | ALL_DONE | NONE_FAILED | AT_LEAST_ONE_SUCCESS | ALL_FAILED | AT_LEAST_ONE_FAILED
+  # Cluster (one of):
+  job_cluster_key: shared-cluster          # Reference to job_clusters entry
+  existing_cluster_id: "1234-567890-abc"   # Use existing cluster
+  new_cluster:                             # Create new cluster for this task
+    spark_version: "15.4.x-scala2.12"
+    node_type_id: "i3.xlarge"
+    num_workers: 2
+  # Notifications (task-level)
+  email_notifications:
+    on_start: []
+    on_success: []
+    on_failure: []
+```
+
+---
+
+### notebook_task
+
+Runs a Databricks notebook (.py, .ipynb, .sql, .r, .scala).
+
+```yaml
+- task_key: my_notebook
+  notebook_task:
+    notebook_path: ../src/my_notebook.py        # Required. Relative to config file.
+    source: WORKSPACE                           # WORKSPACE (default) or GIT
+    base_parameters:                            # Optional key-value params
+      param1: "value1"
+      param2: "{{job.parameters.env}}"
+    warehouse_id: ${var.warehouse_id}           # Optional. For SQL-only notebooks.
+```
+
+---
+
+### spark_python_task
+
+Runs a Python file on a Spark cluster.
+
+```yaml
+- task_key: my_python_script
+  spark_python_task:
+    python_file: ../src/my_script.py            # Required. Path to .py file.
+    source: WORKSPACE
+    parameters:                                 # Optional positional args
+      - "--date"
+      - "{{job.parameters.run_date}}"
+```
+
+---
+
+### python_wheel_task
+
+Runs an entry point from a Python wheel package.
+
+```yaml
+- task_key: my_wheel_task
+  python_wheel_task:
+    entry_point: run                            # Required. Function or class name.
+    package_name: my_package                    # Required. Package name.
+    named_parameters:                           # Optional keyword args (OR parameters, not both)
+      env: "prod"
+      date: "{{job.parameters.run_date}}"
+  libraries:
+    - whl: ../dist/my_package-*.whl
+```
+
+---
+
+### spark_jar_task
+
+Runs a main class from a JAR file.
+
+```yaml
+- task_key: my_jar_task
+  spark_jar_task:
+    main_class_name: com.example.Main           # Required. Fully-qualified class name.
+    parameters:                                 # Optional positional args
+      - "--input"
+      - "/data/input"
+  libraries:
+    - jar: /Volumes/main/default/jars/app.jar
+```
+
+---
+
+### sql_task
+
+Runs a SQL query, SQL file, or refreshes a SQL alert/dashboard.
+
+```yaml
+# SQL file
+- task_key: my_sql_file
+  sql_task:
+    warehouse_id: ${var.warehouse_id}           # Required.
+    file:
+      path: ../src/query.sql                    # Path to .sql file
+      source: WORKSPACE
+    parameters:
+      run_date: "{{job.parameters.run_date}}"
+
+# SQL query (by ID)
+- task_key: my_sql_query
+  sql_task:
+    warehouse_id: ${var.warehouse_id}
+    query:
+      query_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+# SQL alert
+- task_key: my_sql_alert
+  sql_task:
+    warehouse_id: ${var.warehouse_id}
+    alert:
+      alert_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+```
+
+---
+
+### pipeline_task
+
+Triggers a Lakeflow Declarative Pipeline update.
+
+```yaml
+- task_key: my_pipeline
+  pipeline_task:
+    pipeline_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # Required.
+    full_refresh: false                                    # Optional. Default false.
+```
+
+---
+
+### dbt_task
+
+Runs dbt commands.
+
+```yaml
+- task_key: my_dbt_task
+  dbt_task:
+    commands:                                   # Required. Up to 10 commands.
+      - "dbt deps"
+      - "dbt seed"
+      - "dbt run"
+      - "dbt test"
+    project_directory: ../dbt/my_project        # Optional. Defaults to repo root.
+    profiles_directory: ../dbt/profiles         # Optional.
+    warehouse_id: ${var.warehouse_id}           # Optional.
+    catalog: main                               # Optional. Requires warehouse_id.
+    schema: transforms                          # Optional.
+  libraries:
+    - pypi:
+        package: "dbt-databricks>=1.0.0,<2.0.0"
+```
+
+---
+
+### run_job_task
+
+Triggers another Databricks job.
+
+```yaml
+- task_key: trigger_downstream
+  run_job_task:
+    job_id: ${resources.jobs.downstream-job.id}  # Required. Job ID or substitution.
+    job_parameters:                               # Optional.
+      env: "prod"
+```
+
+---
+
+### condition_task
+
+If/else conditional logic. Does not require a cluster.
+
+```yaml
+- task_key: check_condition
+  condition_task:
+    left: "{{job.parameters.env}}"              # Required. String, dynamic ref, or task value.
+    op: EQUAL_TO                                # Required. See operators below.
+    right: "prod"                               # Required.
+
+# Operators: EQUAL_TO, NOT_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL
+
+# Downstream tasks use outcome:
+- task_key: prod_task
+  depends_on:
+    - task_key: check_condition
+      outcome: "true"
+  notebook_task:
+    notebook_path: ../src/prod.py
+
+- task_key: dev_task
+  depends_on:
+    - task_key: check_condition
+      outcome: "false"
+  notebook_task:
+    notebook_path: ../src/dev.py
+```
+
+---
+
+### for_each_task
+
+Iterates a nested task over an array of inputs.
+
+```yaml
+- task_key: process_all
+  for_each_task:
+    inputs: "{{tasks.generate_list.values.items}}"  # Required. JSON array or task value ref.
+    concurrency: 5                                   # Optional. Max parallel iterations.
+    task:                                            # Required. Nested task definition.
+      task_key: process_item
+      notebook_task:
+        notebook_path: ../src/process_item.py
+```
+
+---
+
+### dashboard_task
+
+Refreshes a Lakeview dashboard.
+
+```yaml
+- task_key: refresh_dashboard
+  dashboard_task:
+    dashboard_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # Required.
+    warehouse_id: ${var.warehouse_id}                       # Optional.
+```
+
+---
+
+### clean_rooms_notebook_task
+
+Runs a notebook inside a Databricks Clean Room.
+
+```yaml
+- task_key: clean_room_analysis
+  clean_rooms_notebook_task:
+    clean_room_name: "partner-clean-room"       # Required.
+    notebook_name: "shared_analysis"             # Required.
+```
+
+---
+
+## Schedule Configuration
+
+Time-based scheduling using Quartz cron expressions (6-7 fields).
+
+```yaml
+schedule:
+  quartz_cron_expression: "0 0 8 * * ?"     # Required. Seconds Minutes Hours DayOfMonth Month DayOfWeek [Year]
+  timezone_id: "America/New_York"             # Required.
+  pause_status: UNPAUSED                      # PAUSED or UNPAUSED
+```
+
+**Quartz cron field order:** `Seconds Minutes Hours DayOfMonth Month DayOfWeek [Year]`
+
+Use `?` for DayOfMonth or DayOfWeek when the other is specified. This differs from standard 5-field Unix cron.
+
+---
+
+## Trigger Configuration
+
+Event-driven triggers (mutually exclusive with `schedule`).
+
+### File Arrival
+
+```yaml
+trigger:
+  file_arrival:
+    url: "s3://bucket/path/"                             # Required. UC external location or volume URL.
+    min_time_between_triggers_seconds: 60                # Optional.
+    wait_after_last_change_seconds: 30                   # Optional.
+```
+
+### Table Update
+
+```yaml
+trigger:
+  table:
+    condition: ANY_UPDATED                               # ANY_UPDATED or ALL_UPDATED
+    table_names:                                         # Required. List of UC table names.
+      - "main.silver.transactions"
+      - "main.silver.customers"
+    min_time_between_triggers_seconds: 300               # Optional.
+    wait_after_last_change_seconds: 60                   # Optional.
+```
+
+### Continuous
+
+```yaml
+trigger:
+  periodic:
+    interval: 1
+    unit: HOURS                                          # HOURS, MINUTES, DAYS
+```
+
+---
+
+## Cluster Configuration
+
+Three ways to assign compute to a task:
+
+### New Cluster (per-task)
+
+```yaml
+new_cluster:
+  spark_version: "15.4.x-scala2.12"
+  node_type_id: "i3.xlarge"
+  num_workers: 2                                # Fixed size
+  # OR autoscale:
+  autoscale:
+    min_workers: 1
+    max_workers: 8
+  spark_conf:
+    spark.sql.shuffle.partitions: "200"
+  spark_env_vars:
+    ENV: "prod"
+  data_security_mode: SINGLE_USER               # For Unity Catalog
+```
+
+### Job Cluster (shared across tasks in same job)
+
+```yaml
+# Defined at job level:
+job_clusters:
+  - job_cluster_key: shared-cluster
+    new_cluster:
+      spark_version: "15.4.x-scala2.12"
+      node_type_id: "i3.xlarge"
+      num_workers: 2
+
+# Referenced in task:
+- task_key: my_task
+  job_cluster_key: shared-cluster
+```
+
+### Existing Cluster
+
+```yaml
+- task_key: my_task
+  existing_cluster_id: "1234-567890-abcdef12"
+```
+
+---
+
+## Variable Substitutions
+
+DABs supports dynamic substitutions using `${}` syntax:
+
+| Pattern | Description |
+|---|---|
+| `${var.<name>}` | Bundle variable |
+| `${resources.jobs.<key>.id}` | Job ID from another resource in the bundle |
+| `${resources.pipelines.<key>.id}` | Pipeline ID from the bundle |
+| `${workspace.root_path}` | Workspace root path for the bundle |
+| `${bundle.name}` | Bundle name |
+
+---
+
+## Dynamic Value References (in task parameters)
+
+Used within task parameter values using `{{}}` syntax:
+
+| Pattern | Description |
+|---|---|
+| `{{job.parameters.<name>}}` | Job-level parameter |
+| `{{job.run_id}}` | Current run ID |
+| `{{job.start_time.iso_date}}` | Run start date (YYYY-MM-DD) |
+| `{{tasks.<key>.values.<name>}}` | Task value set by upstream task via `dbutils.jobs.taskValues.set()` |
+| `{{job.repair_count}}` | Number of repair attempts |
