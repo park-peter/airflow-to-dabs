@@ -74,16 +74,19 @@ Codex CLI reads the `AGENTS.md` file from the project root or `~/.codex/`. If yo
 
 ## Usage
 
-Provide an Airflow DAG file and ask the agent to convert it:
+The agent follows a 4-phase workflow: **Parse** the DAG, **Map** operators to DABs task types, **Generate** the bundle project, and **Review** for correctness.
 
-> "Convert this Airflow DAG to Databricks Asset Bundles"
+### Convert multiple DAGs (default)
 
-The agent follows a 4-phase workflow:
+> "Convert all DAGs in the dags/ directory to Databricks Asset Bundles"
 
-1. **Parse** — Read the DAG and extract tasks, dependencies, operators, schedule
-2. **Map** — Apply the operator mapping reference to determine DABs task types
-3. **Generate** — Produce the full DABs project (YAML configs + source files)
-4. **Review** — Validate dependencies, flag manual items, present a summary
+Produces a single bundle with one `databricks.yml` and a separate job resource per DAG. Cross-DAG dependencies resolve within the same bundle.
+
+### Convert a single DAG
+
+> "Convert my_etl_dag.py to a Databricks Asset Bundle"
+
+Produces a standalone bundle directory for that one DAG.
 
 ## Reference Files
 
@@ -98,20 +101,6 @@ The agent follows a 4-phase workflow:
 | [`AGENTS.md`](AGENTS.md) | Codex CLI instruction file (same workflow as SKILL.md) |
 
 ## Example Output
-
-**Single DAG** — one standalone bundle:
-
-```
-daily-etl-pipeline/
-  databricks.yml              # Bundle config with dev/prod targets
-  resources/
-    daily_etl_pipeline_job.yml # Job with schedule, clusters, 3 tasks
-  src/
-    extract.py                 # Notebook extracted from PythonOperator
-    transform.py
-    load.py
-  MIGRATION_NOTES.md           # Conversion decisions
-```
 
 **Multiple DAGs (default)** — single bundle, multiple jobs:
 
@@ -135,6 +124,20 @@ airflow-migration/
 ```
 
 Cross-DAG dependencies (e.g., `TriggerDagRunOperator`) resolve via `${resources.jobs.<name>.id}` within the same bundle.
+
+**Single DAG** — one standalone bundle:
+
+```
+daily-etl-pipeline/
+  databricks.yml              # Bundle config with dev/prod targets
+  resources/
+    daily_etl_pipeline_job.yml # Job with schedule, clusters, 3 tasks
+  src/
+    extract.py                 # Notebook extracted from PythonOperator
+    transform.py
+    load.py
+  MIGRATION_NOTES.md           # Conversion decisions
+```
 
 See [`references/conversion-examples.md`](references/conversion-examples.md) for full before/after walkthroughs.
 
