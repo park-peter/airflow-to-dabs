@@ -4,6 +4,14 @@ A coding agent skill that converts Apache Airflow DAGs into [Databricks Asset Bu
 
 Given an Airflow DAG file, the agent produces a complete bundle project — `databricks.yml`, `resources/*.yml` job definitions, and extracted `src/` source files — ready for `databricks bundle deploy`.
 
+## Platform Support
+
+| Platform | Instruction File | Install Path |
+|----------|-----------------|--------------|
+| **Cursor** | `SKILL.md` | `~/.cursor/skills/airflow-to-dabs/` |
+| **Claude Code** | `SKILL.md` | `~/.claude/skills/airflow-to-dabs/` or `.claude/skills/airflow-to-dabs/` |
+| **Codex CLI** | `AGENTS.md` | `~/.codex/AGENTS.md` or `./AGENTS.md` at project root |
+
 ## What It Does
 
 - Parses Airflow DAG files to extract tasks, dependencies, operators, schedules, and parameters
@@ -28,17 +36,45 @@ Full mapping details: [`references/operator-mapping.md`](references/operator-map
 
 ## Installation
 
-Clone this repo into your Cursor skills directory:
+This skill works with **Cursor**, **Claude Code**, and **Codex CLI**. Clone the repo into the appropriate directory for your platform:
+
+### Cursor
 
 ```bash
 git clone https://github.com/park-peter/airflow-to-dabs.git ~/.cursor/skills/airflow-to-dabs
 ```
 
-The skill will be automatically discovered by Cursor. It triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, or DABs generation from Airflow.
+Cursor auto-discovers skills in `~/.cursor/skills/`. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, or DABs generation from Airflow.
+
+### Claude Code
+
+```bash
+# Personal (all projects)
+git clone https://github.com/park-peter/airflow-to-dabs.git ~/.claude/skills/airflow-to-dabs
+
+# Project-scoped (single project)
+git clone https://github.com/park-peter/airflow-to-dabs.git .claude/skills/airflow-to-dabs
+```
+
+Claude Code reads the `SKILL.md` frontmatter and instructions from `.claude/skills/` or `~/.claude/skills/`.
+
+### Codex CLI
+
+```bash
+# Global (all projects)
+git clone https://github.com/park-peter/airflow-to-dabs.git ~/.codex/skills/airflow-to-dabs
+cp ~/.codex/skills/airflow-to-dabs/AGENTS.md ~/.codex/AGENTS.md
+
+# Project-scoped (single project)
+git clone https://github.com/park-peter/airflow-to-dabs.git .codex/airflow-to-dabs
+cp .codex/airflow-to-dabs/AGENTS.md ./AGENTS.md
+```
+
+Codex CLI reads the `AGENTS.md` file from the project root or `~/.codex/`. If you already have an `AGENTS.md`, append the contents instead of overwriting.
 
 ## Usage
 
-In Cursor, provide an Airflow DAG file and ask the agent to convert it:
+Provide an Airflow DAG file and ask the agent to convert it:
 
 > "Convert this Airflow DAG to Databricks Asset Bundles"
 
@@ -59,6 +95,7 @@ The agent follows a 4-phase workflow:
 | [`references/conversion-examples.md`](references/conversion-examples.md) | 4 complete before/after examples (ETL chain, branching, sensor-triggered, multi-system) |
 | [`references/hadoop-migration-guide.md`](references/hadoop-migration-guide.md) | HDFS path conversion, YARN config cleanup, Hive-to-UC mapping, spark-submit detection, Sqoop alternatives, bulk conversion guidance |
 | [`assets/templates/`](assets/templates/) | Skeleton `databricks.yml` and job resource YAML templates |
+| [`AGENTS.md`](AGENTS.md) | Codex CLI instruction file (same workflow as SKILL.md) |
 
 ## Example Output
 

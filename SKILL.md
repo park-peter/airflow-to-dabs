@@ -1,6 +1,17 @@
 ---
 name: airflow-to-dabs
-description: Converts Apache Airflow DAG files into Databricks Asset Bundless (DABs) projects. Use when migrating Airflow DAGs to Databricks Lakeflow Jobs, converting Airflow operators to DABs task types, or generating databricks.yml and job resource YAML from Airflow Python files. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, Airflow to Lakeflow, or DABs generation from Airflow.
+description: Converts Apache Airflow DAG files into Databricks Asset Bundles (DABs) projects. Use when migrating Airflow DAGs to Databricks Lakeflow Jobs, converting Airflow operators to DABs task types, or generating databricks.yml and job resource YAML from Airflow Python files. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, Airflow to Lakeflow, or DABs generation from Airflow.
+version: 1.0.0
+author: park-peter
+repository: https://github.com/park-peter/airflow-to-dabs
+keywords:
+  - airflow
+  - databricks
+  - migration
+  - lakeflow
+  - dabs
+  - asset-bundles
+  - dag-conversion
 ---
 
 # Airflow to Databricks Asset Bundles Converter
