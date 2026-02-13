@@ -62,7 +62,7 @@ The agent follows a 4-phase workflow:
 
 ## Example Output
 
-For a simple 3-task ETL DAG, the agent generates:
+**Single DAG** — one standalone bundle:
 
 ```
 daily-etl-pipeline/
@@ -75,6 +75,29 @@ daily-etl-pipeline/
     load.py
   MIGRATION_NOTES.md           # Conversion decisions
 ```
+
+**Multiple DAGs (default)** — single bundle, multiple jobs:
+
+```
+airflow-migration/
+  databricks.yml              # Single bundle config, shared variables/targets
+  resources/
+    etl_pipeline_job.yml       # One job resource per DAG
+    reporting_pipeline_job.yml
+    data_quality_job.yml
+  src/
+    etl_pipeline/              # Source files namespaced per DAG
+      extract.py
+      transform.py
+      load.py
+    reporting_pipeline/
+      generate_report.sql
+    data_quality/
+      check_nulls.py
+  MIGRATION_NOTES.md           # Consolidated notes for all DAGs
+```
+
+Cross-DAG dependencies (e.g., `TriggerDagRunOperator`) resolve via `${resources.jobs.<name>.id}` within the same bundle.
 
 See [`references/conversion-examples.md`](references/conversion-examples.md) for full before/after walkthroughs.
 

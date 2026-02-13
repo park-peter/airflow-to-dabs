@@ -75,7 +75,35 @@ For schedule conversion, read `references/schedule-trigger-mapping.md`:
 
 Produce the following output files. Read `references/dab-schema-reference.md` for the complete YAML schema. Use `assets/templates/databricks.yml.tmpl` and `assets/templates/job-resource.yml.tmpl` as starting skeletons.
 
-**Output directory structure:**
+#### Output Modes
+
+**Multi-DAG (default):** When converting multiple DAGs, produce a **single bundle** with one `databricks.yml` and a separate job resource file per DAG under `resources/`. This is the default because it enables cross-job references via `${resources.jobs.<name>.id}` and allows a single `databricks bundle deploy`.
+
+**Single-DAG:** When converting one DAG, produce a standalone bundle directory.
+
+**Split bundles (opt-in):** If the user explicitly requests separate bundles per DAG (e.g., "create a separate bundle for each DAG"), produce one bundle directory per DAG. Cross-DAG `TriggerDagRunOperator` references will require hardcoded job IDs and a note in MIGRATION_NOTES.md.
+
+#### Multi-DAG Output Structure (default)
+
+```
+<bundle-name>/
+  databricks.yml                    # Single bundle config with shared variables and targets
+  resources/
+    <dag_id_1>_job.yml              # One job resource per DAG
+    <dag_id_2>_job.yml
+    <dag_id_3>_job.yml
+  src/
+    <dag_id_1>/                     # Source files namespaced per DAG
+      <task_id>.py
+      <task_id>.sql
+    <dag_id_2>/
+      <task_id>.py
+    <dag_id_3>/
+      <task_id>.py
+  MIGRATION_NOTES.md                # Consolidated migration notes for all DAGs
+```
+
+#### Single-DAG Output Structure
 
 ```
 <dag_id>-bundle/
@@ -83,16 +111,16 @@ Produce the following output files. Read `references/dab-schema-reference.md` fo
   resources/
     <dag_id>_job.yml
   src/
-    <task_id>.py          # One per notebook_task / spark_python_task
-    <task_id>.sql         # One per sql_task with inline SQL
-  MIGRATION_NOTES.md      # Conversion decisions and manual items
+    <task_id>.py
+    <task_id>.sql
+  MIGRATION_NOTES.md
 ```
 
 **File generation rules:**
 
-1. **`databricks.yml`**: Derive `bundle.name` from `dag_id` (kebab-case). Include `variables` for `spark_version`, `node_type_id`, `warehouse_id`. Define `dev` and `prod` targets.
+1. **`databricks.yml`**: For multi-DAG, derive `bundle.name` from a user-provided name or the parent directory name. For single-DAG, derive from `dag_id` (kebab-case). Include `variables` for `spark_version`, `node_type_id`, `warehouse_id`. Define `dev` and `prod` targets. Use `include: - resources/*.yml` to pull in all job definitions.
 
-2. **`resources/<dag_id>_job.yml`**: One job resource containing:
+2. **`resources/<dag_id>_job.yml`**: One job resource file per DAG, each containing:
    - `schedule` or `trigger` from Phase 2
    - `email_notifications` from `default_args.email`
    - `parameters` from DAG `params` and Jinja variables like `{{ ds }}`
@@ -100,25 +128,29 @@ Produce the following output files. Read `references/dab-schema-reference.md` fo
    - `tasks` list with all mapped tasks, preserving the dependency graph via `depends_on`
    - Task-level `max_retries` and `min_retry_interval_millis` from `default_args.retries` and `retry_delay`
    - Task-level `timeout_seconds` from `default_args.execution_timeout`
+   - Cross-DAG references via `TriggerDagRunOperator` resolve to `${resources.jobs.<target-dag-job-key>.id}` within the same bundle
 
-3. **`src/*.py` notebooks**: For each `notebook_task` or `spark_python_task`:
+3. **`src/<dag_id>/*.py` notebooks**: For each `notebook_task` or `spark_python_task`:
+   - In multi-DAG mode, namespace source files under `src/<dag_id>/` to avoid collisions
+   - In single-DAG mode, place directly in `src/`
    - Start with `# Databricks notebook source`
    - Add `dbutils.widgets.text()` and `dbutils.widgets.get()` for each `base_parameter`
    - Extract the `python_callable` function body (not the function signature itself)
    - Replace Airflow imports with Databricks equivalents (e.g., `from airflow.models import Variable` -> `dbutils.widgets.get()`)
 
-4. **`src/*.sql` files**: For each `sql_task` with inline SQL:
+4. **`src/<dag_id>/*.sql` files**: For each `sql_task` with inline SQL:
    - Extract the SQL string
    - Replace `{{ ds }}` with `{{job.parameters.run_date}}`
    - Replace `{{ params.x }}` with `{{job.parameters.x}}`
 
-5. **`MIGRATION_NOTES.md`**: Document:
+5. **`MIGRATION_NOTES.md`**: A single consolidated file documenting:
    - Tier 4 operators flagged for manual review
    - XCom patterns that need conversion to `dbutils.jobs.taskValues`
    - Airflow Connections that need Databricks secrets or UC connections
    - Airflow Variables that need bundle variables or job parameters
    - Any `catchup`, `depends_on_past`, `sla` settings that have no DABs equivalent
    - Sensor-to-trigger conversions with notes on external location setup
+   - **Cross-DAG dependency map**: which jobs reference other jobs via `run_job_task`, with resolved `${resources.jobs...}` substitutions
 
 ### Phase 4: Review and Validate
 
@@ -150,7 +182,7 @@ Progressive disclosure -- read these references as needed during each phase:
 User says: "Convert this Airflow DAG to a Databricks Asset Bundles"
 User provides: an Airflow DAG Python file (pasted or referenced via @file)
 
-Result: Complete DABs project with `databricks.yml`, `resources/*.yml`, `src/` notebooks, and `MIGRATION_NOTES.md`.
+Result: Standalone DABs project with `databricks.yml`, `resources/<dag_id>_job.yml`, `src/` notebooks, and `MIGRATION_NOTES.md`.
 
 ### Example: Convert with specific target config
 
@@ -158,8 +190,14 @@ User says: "Migrate my_etl_dag.py to DABs targeting our dev workspace at https:/
 
 Result: DABs project with workspace URL pre-filled in `targets.dev.workspace.host`.
 
-### Example: Bulk conversion
+### Example: Convert multiple DAGs (default -- single bundle)
 
-User says: "Convert all DAGs in the dags/ directory to Databricks Asset Bundless"
+User says: "Convert all DAGs in the dags/ directory to Databricks Asset Bundles"
 
-Result: For each DAG file, generate a separate bundle directory. Shared DAGs referenced via `TriggerDagRunOperator` are linked using `${resources.jobs.<name>.id}` substitutions. A top-level `MIGRATION_NOTES.md` summarizes cross-DAG dependencies.
+Result: A single bundle with one `databricks.yml`, a separate `resources/<dag_id>_job.yml` per DAG, source files namespaced under `src/<dag_id>/`, and a consolidated `MIGRATION_NOTES.md`. Cross-DAG `TriggerDagRunOperator` references resolve via `${resources.jobs.<name>.id}`.
+
+### Example: Convert multiple DAGs into separate bundles (opt-in)
+
+User says: "Convert all DAGs in the dags/ directory into separate bundles, one per DAG"
+
+Result: One bundle directory per DAG, each with its own `databricks.yml`. Cross-DAG references use hardcoded job IDs with a note in each `MIGRATION_NOTES.md`.
