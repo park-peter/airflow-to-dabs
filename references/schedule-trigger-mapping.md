@@ -15,7 +15,7 @@ DABs uses **6-field Quartz cron** (second, minute, hour, day-of-month, month, da
 |---|---|---|
 | Fields | 5: `MIN HOUR DOM MON DOW` | 6-7: `SEC MIN HOUR DOM MON DOW [YEAR]` |
 | Seconds | Not supported | First field, usually `0` |
-| Day-of-week | `0-6` (Sun=0) or `SUN-SAT` | `1-7` (Sun=1) or `SUN-SAT` |
+| Day-of-week | `0-7` (Sun=0 or 7) or `SUN-SAT` | `1-7` (Sun=1) or `SUN-SAT` |
 | Mutual exclusion | Both DOM and DOW can be `*` | Use `?` for one when the other is set |
 | Timezone | `start_date` timezone or `schedule_interval` | `timezone_id` field (IANA format) |
 
@@ -31,6 +31,12 @@ DABs:     0   MIN  HOUR DOM MON DOW
 If both DOM and DOW are `*` in Airflow, set DOW to `?` in Quartz:
 `* * * * *` -> `0 * * * * ?`
 
+If DOW is numeric, shift by +1 for Quartz and normalize Sunday:
+- Airflow `0` or `7` (Sunday) -> Quartz `1`
+- Airflow `1-6` (Mon-Sat) -> Quartz `2-7`
+
+Prefer named days (`MON`..`SUN`) to avoid off-by-one conversion bugs.
+
 ---
 
 ## Airflow Preset to Quartz Cron
@@ -38,7 +44,7 @@ If both DOM and DOW are `*` in Airflow, set DOW to `?` in Quartz:
 | Airflow Preset | Airflow Cron | Quartz Cron | Description |
 |---|---|---|---|
 | `@once` | N/A | *(no schedule, manual trigger)* | Run once. Remove schedule, trigger manually. |
-| `@continuous` | N/A | `trigger.periodic.interval: 1, unit: MINUTES` | Continuous execution. |
+| `@continuous` | N/A | `continuous.pause_status: UNPAUSED` | Continuous execution mode. |
 | `@hourly` | `0 * * * *` | `0 0 * * * ?` | Top of every hour |
 | `@daily` / `@midnight` | `0 0 * * *` | `0 0 0 * * ?` | Midnight daily |
 | `@weekly` | `0 0 * * 0` | `0 0 0 ? * 1` | Midnight Sunday |
@@ -59,7 +65,7 @@ If both DOM and DOW are `*` in Airflow, set DOW to `?` in Quartz:
 | 6 PM last day of month | `0 18 28-31 * *` | `0 0 18 L * ?` |
 | Every Monday 9 AM | `0 9 * * 1` | `0 0 9 ? * 2` |
 
-> **Day-of-week note:** Airflow `1` = Monday, Quartz `2` = Monday. Shift Airflow DOW values by +1 for Quartz, or use named days (`MON`, `TUE`, etc.) which work in both.
+> **Day-of-week note:** Airflow `1` = Monday, Quartz `2` = Monday. Also map Airflow `7` (Sunday) to Quartz `1`. Using named days avoids numeric ambiguity.
 
 ---
 
@@ -118,7 +124,7 @@ trigger:
   file_arrival:
     url: s3://landing-zone/data/
     min_time_between_triggers_seconds: 60
-    wait_after_last_change_seconds: 30
+    wait_after_last_change_seconds: 60
 ```
 
 **Key differences:**
@@ -127,12 +133,12 @@ trigger:
 
 ---
 
-### Table-Based Sensors -> `trigger.table`
+### Table-Based Sensors -> `trigger.table_update`
 
 | Airflow Sensor | Trigger Config |
 |---|---|
-| `ExternalTaskSensor` (if upstream writes to a table) | `trigger.table` monitoring the output table |
-| `SqlSensor` (if checking table freshness/existence) | `trigger.table` with `condition: ANY_UPDATED` |
+| `ExternalTaskSensor` (if upstream writes to a table) | `trigger.table_update` monitoring the output table |
+| `SqlSensor` (if checking table freshness/existence) | `trigger.table_update` with `condition: ANY_UPDATED` |
 
 **Airflow:**
 
@@ -149,7 +155,7 @@ wait_for_upstream = ExternalTaskSensor(
 
 ```yaml
 trigger:
-  table:
+  table_update:
     condition: ANY_UPDATED
     table_names:
       - "main.silver.transactions"
@@ -178,13 +184,27 @@ trigger:
 
 ---
 
+## Airflow Timetable and Dataset Scheduling
+
+Airflow DAGs can use non-cron schedule APIs that are not 1:1 with a Quartz cron.
+
+| Airflow Scheduling Pattern | DABs Mapping |
+|---|---|
+| `schedule=[Dataset(...)]` / dataset event scheduling | Prefer `trigger.table_update` on the upstream Unity Catalog table(s). |
+| Custom `Timetable` subclass | Flag for manual review and map to `schedule` or `trigger` based on business intent. |
+| `@continuous` | Use job-level `continuous` (not periodic trigger). |
+
+If a dataset or timetable schedule cannot be deterministically mapped, add a required action item in `MIGRATION_NOTES.md`.
+
+---
+
 ## Airflow `default_args` Mapping
 
 Common `default_args` fields and their DABs equivalents:
 
 | Airflow `default_args` | DABs Equivalent |
 |---|---|
-| `owner` | `run_as.service_principal_name` or `run_as.user_name` |
+| `owner` | *(no direct mapping -- do not auto-map identity; document intended run identity in MIGRATION_NOTES.md)* |
 | `retries` | `max_retries` on task |
 | `retry_delay` | `min_retry_interval_millis` on task |
 | `email` | `email_notifications.on_failure` |

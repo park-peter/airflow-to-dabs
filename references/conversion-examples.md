@@ -83,10 +83,10 @@ include:
 variables:
   spark_version:
     description: Spark runtime version
-    default: "15.4.x-scala2.12"
+    default: "<SPARK_VERSION>"
   node_type_id:
     description: Cluster node type
-    default: "i3.xlarge"
+    default: "<NODE_TYPE_ID>"
 
 targets:
   dev:
@@ -394,7 +394,7 @@ resources:
         file_arrival:
           url: s3://data-landing/incoming/
           min_time_between_triggers_seconds: 60
-          wait_after_last_change_seconds: 30
+          wait_after_last_change_seconds: 60
 
       job_clusters:
         - job_cluster_key: processing-cluster

@@ -36,9 +36,9 @@ extract_task = PythonOperator(
 - task_key: extract_data
   notebook_task:
     notebook_path: ../src/extract_data.py
-  base_parameters:
-    source_table: "raw.events"
-    target_path: "/mnt/silver/events"
+    base_parameters:
+      source_table: "raw.events"
+      target_path: "/mnt/silver/events"
 ```
 
 **Generated `src/extract_data.py`:**
@@ -302,7 +302,10 @@ trigger_downstream = TriggerDagRunOperator(
 
 **DABs task type:** `dbt_task`
 
-Map dbt commands to the `commands` list. Map `project_dir` to `project_directory` and `profiles_dir` to `profiles_directory`. Specify `warehouse_id` for execution.
+Map dbt commands to the `commands` list and map `project_dir` to `project_directory`.
+
+- If using Databricks SQL warehouse execution, set `warehouse_id` and omit `profiles_directory`.
+- If using a custom profile-based setup, set `profiles_directory` and omit `warehouse_id`.
 
 **Airflow:**
 
@@ -694,10 +697,10 @@ resources:
 
 ### ExternalTaskSensor
 
-**DABs equivalent:** `depends_on` (same job), `run_job_task` (cross-job), or `trigger.table`
+**DABs equivalent:** `depends_on` (same job), `run_job_task` (cross-job), or `trigger.table_update`
 
 **Same job:** use `depends_on` on the task key.
-**Cross-job, table-driven:** use `trigger.table` to fire when a table is updated by the upstream job.
+**Cross-job, table-driven:** use `trigger.table_update` to fire when a table is updated by the upstream job.
 **Cross-job, explicit:** use `run_job_task` in the upstream job to chain them.
 
 **DABs YAML (table trigger):**
@@ -708,7 +711,7 @@ resources:
     downstream_job:
       name: downstream-job
       trigger:
-        table:
+        table_update:
           condition: ANY_UPDATED
           table_names:
             - "main.silver.transactions"
@@ -723,9 +726,9 @@ resources:
 
 ### SqlSensor
 
-**DABs equivalent:** `trigger.table` or `notebook_task` with polling logic.
+**DABs equivalent:** `trigger.table_update` or `notebook_task` with polling logic.
 
-If the SQL checks for table row existence or freshness, convert to a `trigger.table`. If the SQL checks an arbitrary condition, wrap it in a `notebook_task`.
+If the SQL checks for table row existence or freshness, convert to a `trigger.table_update`. If the SQL checks an arbitrary condition, wrap it in a `notebook_task`.
 
 ---
 
@@ -761,6 +764,7 @@ These operators have no direct DABs equivalent. Flag them in `MIGRATION_NOTES.md
 | `PigOperator` | `notebook_task` or `sql_task` | Rewrite Pig Latin scripts as Spark SQL or PySpark. No Pig runtime on Databricks. |
 | `BashOperator` (wrapping `spark-submit`) | `spark_python_task` or `spark_jar_task` | Parse the spark-submit command and convert. See `hadoop-migration-guide.md`. |
 | `SSHOperator` (wrapping `spark-submit`) | `spark_python_task` or `spark_jar_task` | Extract the remote command. SSH hop is eliminated. See `hadoop-migration-guide.md`. |
+| Airflow dynamic task mapping (`expand`, mapped TaskFlow tasks) | `for_each_task` | Convert mapped fan-out to `for_each_task` with a deterministic JSON array input, or flag for manual review if mapping logic is dynamic/non-deterministic at parse time. |
 | XCom-heavy patterns | `dbutils.jobs.taskValues` | Replace `xcom_push`/`xcom_pull` with `dbutils.jobs.taskValues.set()` and dynamic value references `{{tasks.<key>.values.<name>}}`. |
 | Airflow Variables | DABs variables or job parameters | Replace `Variable.get()` with `${var.<name>}` in YAML or `dbutils.widgets.get()` in notebooks. |
 | Airflow Connections | Databricks secrets or UC connections | Replace `BaseHook.get_connection()` with `dbutils.secrets.get()` or Unity Catalog connection references. |

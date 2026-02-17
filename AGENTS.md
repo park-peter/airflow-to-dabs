@@ -11,11 +11,11 @@ Produce a deployable bundle: `databricks.yml`, `resources/*.yml` job definitions
 - Parse Airflow DAG files to extract tasks, dependencies, operators, schedules, and parameters
 - Map 30+ Airflow operator types to DABs task type equivalents using a tiered mapping system
 - Convert Airflow cron expressions and presets to Quartz cron format
-- Convert Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (file_arrival, table update)
+- Convert Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (file_arrival, table_update)
 - Extract inline Python callables, SQL strings, and bash commands into standalone source files
 - Convert Jinja template variables to DABs dynamic value references
 - Map `default_args` (retries, timeouts, email notifications) to DABs job/task settings
-- Handle TaskGroups, SubDAGs, branching operators, and XCom patterns
+- Handle TaskGroups, SubDAGs, branching operators, Airflow dynamic task mapping, and XCom patterns
 - Hadoop/HDFS migration: detect `spark-submit` in BashOperator/SSHOperator, clean up YARN Spark configs, map HDFS paths, convert HiveQL to Spark SQL, handle Sqoop alternatives
 - Bulk conversion guidance for DAGs with hundreds of Spark tasks
 
@@ -30,7 +30,7 @@ Read the provided Airflow DAG file(s) and extract:
 3. **Dependency graph**: `>>` / `<<` chains, `set_upstream`/`set_downstream` calls
 4. **Sensors**: Sensor tasks and their trigger conditions
 5. **TaskGroups / SubDAGs**: Grouped tasks and internal structure
-6. **Flags**: Custom operators, XCom usage, Airflow Variables, Airflow Connections
+6. **Flags**: Custom operators, XCom usage, Airflow Variables, Airflow Connections, dynamic task mapping (`expand`), and custom timetable/dataset schedules
 
 Present a summary table before proceeding:
 
@@ -56,14 +56,16 @@ For each task:
    - `SubDagOperator`/`TaskGroup`: Flatten with prefixed keys, or extract via `run_job_task`.
 3. **Tier 3 (sensors)**: Convert to job-level triggers per `references/schedule-trigger-mapping.md`.
    - File sensors -> `trigger.file_arrival`
-   - Table/SQL sensors -> `trigger.table`
-   - External task sensors -> `depends_on`, `run_job_task`, or `trigger.table`
+   - Table/SQL sensors -> `trigger.table_update`
+   - External task sensors -> `depends_on`, `run_job_task`, or `trigger.table_update`
 4. **Tier 4 (unsupported)**: Flag for manual review. Suggest `notebook_task` as fallback. Add to `MIGRATION_NOTES.md`.
 
 For schedule conversion (see `references/schedule-trigger-mapping.md`):
-- Convert Airflow 5-field cron to 6-field Quartz cron (prepend `0` for seconds, adjust day-of-week)
+- Convert Airflow 5-field cron to 6-field Quartz cron (prepend `0` for seconds, adjust day-of-week, normalize Sunday `0/7 -> 1`)
 - Convert presets (`@daily`, `@hourly`) to Quartz equivalents
 - Extract timezone from `default_args` or `start_date`
+- Convert `@continuous` to job-level `continuous`
+- Map dataset/timetable schedules to `trigger.table_update` when deterministic, otherwise flag in MIGRATION_NOTES
 
 For Hadoop/on-prem migrations (see `references/hadoop-migration-guide.md`):
 - Convert HDFS paths to Unity Catalog volumes or cloud storage
@@ -98,7 +100,8 @@ Use `references/dab-schema-reference.md` for YAML schema. Use `assets/templates/
 3. **Task type check**: Each task has exactly one task type field
 4. **Cluster check**: Compute-requiring tasks have `job_cluster_key`, `existing_cluster_id`, or `new_cluster`
 5. **Parameter check**: All `{{job.parameters.*}}` have corresponding entries in `parameters`
-6. **Present summary**: File list, task count, MIGRATION_NOTES items
+6. **Bundle schema check**: Run `databricks bundle validate -t <target>` and resolve warnings/errors (if auth unavailable, run offline schema checks and report limitation)
+7. **Present summary**: File list, task count, MIGRATION_NOTES items
 
 ## Reference Files
 

@@ -22,6 +22,17 @@ resources:
       #   file_arrival:
       #     url: "<EXTERNAL_LOCATION_URL>"
       #     min_time_between_triggers_seconds: 60
+      #     wait_after_last_change_seconds: 60
+      #   # table_update:
+      #   #   condition: ANY_UPDATED
+      #   #   table_names:
+      #   #     - "main.silver.example_table"
+      #   #   min_time_between_triggers_seconds: 300
+      #   #   wait_after_last_change_seconds: 60
+      #
+      # OR Continuous mode -- for Airflow @continuous
+      # continuous:
+      #   pause_status: UNPAUSED
 
       # Job-level notifications
       # email_notifications:

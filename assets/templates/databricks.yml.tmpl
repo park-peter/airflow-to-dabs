@@ -12,11 +12,11 @@ include:
 
 variables:
   spark_version:
-    description: Spark runtime version
-    default: "15.4.x-scala2.12"
+    description: Spark runtime version (set per workspace policy/cloud)
+    default: "<SPARK_VERSION>"
   node_type_id:
-    description: Cluster node type
-    default: "i3.xlarge"
+    description: Cluster node type (set per workspace policy/cloud)
+    default: "<NODE_TYPE_ID>"
   warehouse_id:
     description: SQL warehouse ID for SQL tasks
     default: "<WAREHOUSE_ID>"

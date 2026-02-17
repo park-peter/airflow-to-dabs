@@ -16,10 +16,10 @@ include:
 variables:
   spark_version:
     description: Spark runtime version
-    default: "15.4.x-scala2.12"
+    default: "<SPARK_VERSION>"
   node_type_id:
     description: Cluster node type
-    default: "i3.xlarge"
+    default: "<NODE_TYPE_ID>"
   warehouse_id:
     description: SQL warehouse ID for SQL tasks
     default: ""
@@ -120,8 +120,8 @@ Each task must have exactly one task type field (e.g., `notebook_task`, `sql_tas
   job_cluster_key: shared-cluster          # Reference to job_clusters entry
   existing_cluster_id: "1234-567890-abc"   # Use existing cluster
   new_cluster:                             # Create new cluster for this task
-    spark_version: "15.4.x-scala2.12"
-    node_type_id: "i3.xlarge"
+    spark_version: ${var.spark_version}
+    node_type_id: ${var.node_type_id}
     num_workers: 2
   # Notifications (task-level)
   email_notifications:
@@ -258,8 +258,8 @@ Runs dbt commands.
       - "dbt run"
       - "dbt test"
     project_directory: ../dbt/my_project        # Optional. Defaults to repo root.
-    profiles_directory: ../dbt/profiles         # Optional.
-    warehouse_id: ${var.warehouse_id}           # Optional.
+    warehouse_id: ${var.warehouse_id}           # Optional. Omit profiles_directory when set.
+    # profiles_directory: ../dbt/profiles       # Optional. Use only when warehouse_id is omitted.
     catalog: main                               # Optional. Requires warehouse_id.
     schema: transforms                          # Optional.
   libraries:
@@ -385,14 +385,14 @@ trigger:
   file_arrival:
     url: "s3://bucket/path/"                             # Required. UC external location or volume URL.
     min_time_between_triggers_seconds: 60                # Optional.
-    wait_after_last_change_seconds: 30                   # Optional.
+    wait_after_last_change_seconds: 60                   # Optional. Minimum allowed is 60.
 ```
 
 ### Table Update
 
 ```yaml
 trigger:
-  table:
+  table_update:
     condition: ANY_UPDATED                               # ANY_UPDATED or ALL_UPDATED
     table_names:                                         # Required. List of UC table names.
       - "main.silver.transactions"
@@ -403,11 +403,20 @@ trigger:
 
 ### Continuous
 
+Use continuous mode for always-on execution semantics (`@continuous` in Airflow).
+
+```yaml
+continuous:
+  pause_status: UNPAUSED
+```
+
+For periodic event triggers, use:
+
 ```yaml
 trigger:
   periodic:
     interval: 1
-    unit: HOURS                                          # HOURS, MINUTES, DAYS
+    unit: HOURS                                          # HOURS, DAYS, WEEKS
 ```
 
 ---
@@ -420,8 +429,8 @@ Three ways to assign compute to a task:
 
 ```yaml
 new_cluster:
-  spark_version: "15.4.x-scala2.12"
-  node_type_id: "i3.xlarge"
+  spark_version: ${var.spark_version}
+  node_type_id: ${var.node_type_id}
   num_workers: 2                                # Fixed size
   # OR autoscale:
   autoscale:
@@ -441,8 +450,8 @@ new_cluster:
 job_clusters:
   - job_cluster_key: shared-cluster
     new_cluster:
-      spark_version: "15.4.x-scala2.12"
-      node_type_id: "i3.xlarge"
+      spark_version: ${var.spark_version}
+      node_type_id: ${var.node_type_id}
       num_workers: 2
 
 # Referenced in task:

@@ -17,11 +17,12 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 - Parses Airflow DAG files to extract tasks, dependencies, operators, schedules, and parameters
 - Maps **30+ Airflow operator types** to DABs task type equivalents using a [tiered mapping system](references/operator-mapping.md)
 - Converts Airflow cron expressions and presets to Quartz cron format
-- Converts Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers
+- Converts Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (`file_arrival`, `table_update`)
 - Extracts inline Python, SQL, and bash into standalone source files
 - Converts Jinja template variables (`{{ ds }}`, `{{ params.x }}`) to DABs dynamic value references
 - Generates `MIGRATION_NOTES.md` documenting conversion decisions and manual action items
 - **Hadoop/HDFS migration support**: detects `spark-submit` in BashOperator/SSHOperator, cleans up YARN configs, maps HDFS paths, converts HiveQL, handles Sqoop alternatives
+- Covers Airflow edge patterns including dynamic task mapping (`expand`) and timetable/dataset scheduling notes
 
 ## Operator Coverage
 
@@ -87,6 +88,20 @@ Produces a single bundle with one `databricks.yml` and a separate job resource p
 > "Convert my_etl_dag.py to a Databricks Asset Bundle"
 
 Produces a standalone bundle directory for that one DAG.
+
+## Validation and QA
+
+After generation, validate the output bundle before deployment:
+
+```bash
+databricks bundle validate -t dev
+```
+
+If Databricks auth is not configured yet, run schema checks offline and resolve structural issues first:
+
+```bash
+databricks bundle schema
+```
 
 ## Reference Files
 
