@@ -10,7 +10,7 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 |----------|-----------------|--------------|
 | **Cursor** | `SKILL.md` | `~/.cursor/skills/airflow-to-dabs/` |
 | **Claude Code** | `SKILL.md` | `~/.claude/skills/airflow-to-dabs/` or `.claude/skills/airflow-to-dabs/` |
-| **Codex CLI** | `AGENTS.md` | `~/.codex/AGENTS.md` or `./AGENTS.md` at project root |
+| **Codex CLI** | `AGENTS.md` | Skill repo: `~/.codex/skills/airflow-to-dabs/` or `.codex/skills/airflow-to-dabs/`; active instructions: `~/.codex/AGENTS.md` or `./AGENTS.md` |
 
 ## What It Does
 
@@ -39,10 +39,17 @@ Full mapping details: [`references/operator-mapping.md`](references/operator-map
 
 This skill works with **Cursor**, **Claude Code**, and **Codex CLI**. Clone the repo into the appropriate directory for your platform:
 
+Install in either personal scope or project scope, not both, unless you intentionally want both available.
+
 ### Cursor
 
 ```bash
-git clone https://github.com/park-peter/airflow-to-dabs.git ~/.cursor/skills/airflow-to-dabs
+mkdir -p ~/.cursor/skills
+if [ -d ~/.cursor/skills/airflow-to-dabs/.git ]; then
+  git -C ~/.cursor/skills/airflow-to-dabs pull --ff-only
+else
+  git clone https://github.com/park-peter/airflow-to-dabs.git ~/.cursor/skills/airflow-to-dabs
+fi
 ```
 
 Cursor auto-discovers skills in `~/.cursor/skills/`. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, or DABs generation from Airflow.
@@ -50,11 +57,23 @@ Cursor auto-discovers skills in `~/.cursor/skills/`. Triggers on mentions of Air
 ### Claude Code
 
 ```bash
+# Choose ONE scope.
+
 # Personal (all projects)
-git clone https://github.com/park-peter/airflow-to-dabs.git ~/.claude/skills/airflow-to-dabs
+mkdir -p ~/.claude/skills
+if [ -d ~/.claude/skills/airflow-to-dabs/.git ]; then
+  git -C ~/.claude/skills/airflow-to-dabs pull --ff-only
+else
+  git clone https://github.com/park-peter/airflow-to-dabs.git ~/.claude/skills/airflow-to-dabs
+fi
 
 # Project-scoped (single project)
-git clone https://github.com/park-peter/airflow-to-dabs.git .claude/skills/airflow-to-dabs
+mkdir -p .claude/skills
+if [ -d .claude/skills/airflow-to-dabs/.git ]; then
+  git -C .claude/skills/airflow-to-dabs pull --ff-only
+else
+  git clone https://github.com/park-peter/airflow-to-dabs.git .claude/skills/airflow-to-dabs
+fi
 ```
 
 Claude Code reads the `SKILL.md` frontmatter and instructions from `.claude/skills/` or `~/.claude/skills/`.
@@ -62,16 +81,46 @@ Claude Code reads the `SKILL.md` frontmatter and instructions from `.claude/skil
 ### Codex CLI
 
 ```bash
+# Choose ONE scope.
+
 # Global (all projects)
-git clone https://github.com/park-peter/airflow-to-dabs.git ~/.codex/skills/airflow-to-dabs
-cp ~/.codex/skills/airflow-to-dabs/AGENTS.md ~/.codex/AGENTS.md
+mkdir -p ~/.codex/skills ~/.codex
+if [ -d ~/.codex/skills/airflow-to-dabs/.git ]; then
+  git -C ~/.codex/skills/airflow-to-dabs pull --ff-only
+else
+  git clone https://github.com/park-peter/airflow-to-dabs.git ~/.codex/skills/airflow-to-dabs
+fi
+touch ~/.codex/AGENTS.md
+cp ~/.codex/AGENTS.md ~/.codex/AGENTS.md.bak.$(date +%Y%m%d%H%M%S)
+if ! grep -q "BEGIN airflow-to-dabs" ~/.codex/AGENTS.md; then
+  {
+    echo
+    echo "<!-- BEGIN airflow-to-dabs -->"
+    cat ~/.codex/skills/airflow-to-dabs/AGENTS.md
+    echo "<!-- END airflow-to-dabs -->"
+  } >> ~/.codex/AGENTS.md
+fi
 
 # Project-scoped (single project)
-git clone https://github.com/park-peter/airflow-to-dabs.git .codex/airflow-to-dabs
-cp .codex/airflow-to-dabs/AGENTS.md ./AGENTS.md
+mkdir -p .codex/skills
+if [ -d .codex/skills/airflow-to-dabs/.git ]; then
+  git -C .codex/skills/airflow-to-dabs pull --ff-only
+else
+  git clone https://github.com/park-peter/airflow-to-dabs.git .codex/skills/airflow-to-dabs
+fi
+touch ./AGENTS.md
+cp ./AGENTS.md ./AGENTS.md.bak.$(date +%Y%m%d%H%M%S)
+if ! grep -q "BEGIN airflow-to-dabs" ./AGENTS.md; then
+  {
+    echo
+    echo "<!-- BEGIN airflow-to-dabs -->"
+    cat ./.codex/skills/airflow-to-dabs/AGENTS.md
+    echo "<!-- END airflow-to-dabs -->"
+  } >> ./AGENTS.md
+fi
 ```
 
-Codex CLI reads the `AGENTS.md` file from the project root or `~/.codex/`. If you already have an `AGENTS.md`, append the contents instead of overwriting.
+Codex CLI reads `AGENTS.md` from the project root or `~/.codex/`. This flow is non-destructive: it creates a timestamped backup and appends a marker-delimited skill block only if it is not already present.
 
 ## Usage
 
