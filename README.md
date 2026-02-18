@@ -15,7 +15,7 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 ## What It Does
 
 - Parses Airflow DAG files to extract tasks, dependencies, operators, schedules, and parameters
-- Maps **30+ Airflow operator types** to DABs task type equivalents using a [tiered mapping system](references/operator-mapping.md)
+- Maps **40+ Airflow operator types** (including all [Databricks provider operators](https://airflow.apache.org/docs/apache-airflow-providers-databricks/stable/operators/index.html)) to DABs task type equivalents using a [tiered mapping system](references/operator-mapping.md)
 - Converts Airflow cron expressions and presets to Quartz cron format
 - Converts Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (`file_arrival`, `table_update`)
 - Extracts inline Python, SQL, and bash into standalone source files
@@ -28,10 +28,12 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 
 | Tier | Description | Examples |
 |------|-------------|----------|
-| **1 — Direct** | 1:1 mapping to a DABs task type | `PythonOperator`, `BashOperator`, `SparkSubmitOperator`, `SQLExecuteQueryOperator`, `DbtOperator`, `TriggerDagRunOperator`, `HiveOperator`, `SSHOperator` |
-| **2 — Semantic** | Requires reasoning about intent | `BranchPythonOperator`, `ShortCircuitOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator` |
-| **3 — Sensor** | Converted to job-level triggers | `S3KeySensor`, `HdfsSensor`, `FileSensor`, `ExternalTaskSensor`, `SqlSensor`, `TimeSensor` |
+| **1 — Direct** | 1:1 mapping to a DABs task type | `PythonOperator`, `BashOperator`, `SparkSubmitOperator`, `DatabricksSubmitRunOperator`, `DatabricksRunNowOperator`, `DatabricksNotebookOperator`, `DatabricksSqlOperator`, `DatabricksSQLStatementsOperator`, `DatabricksCopyIntoOperator`, `SQLExecuteQueryOperator`, `DbtOperator`, `TriggerDagRunOperator`, `HiveOperator`, `SSHOperator` |
+| **2 — Semantic** | Requires reasoning about intent | `BranchPythonOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
+| **3 — Sensor** | Converted to job-level triggers | `S3KeySensor`, `DatabricksSqlSensor`, `DatabricksPartitionSensor`, `DatabricksSQLStatementsSensor`, `HdfsSensor`, `FileSensor`, `ExternalTaskSensor`, `SqlSensor`, `TimeSensor` |
 | **4 — Unsupported** | Flagged for manual review | Custom operators, `KubernetesPodOperator`, `SqoopOperator`, `PigOperator`, XCom-heavy patterns |
+
+\* `DatabricksReposCreateOperator`, `DatabricksReposUpdateOperator`, and `DatabricksReposDeleteOperator` are infrastructure/repo-management operators with no DABs job task equivalent — they are omitted and noted in `MIGRATION_NOTES.md`.
 
 Full mapping details: [`references/operator-mapping.md`](references/operator-mapping.md)
 

@@ -9,7 +9,7 @@ Produce a deployable bundle: `databricks.yml`, `resources/*.yml` job definitions
 ## Capabilities
 
 - Parse Airflow DAG files to extract tasks, dependencies, operators, schedules, and parameters
-- Map 30+ Airflow operator types to DABs task type equivalents using a tiered mapping system
+- Map 40+ Airflow operator types (including all Databricks provider operators) to DABs task type equivalents using a tiered mapping system
 - Convert Airflow cron expressions and presets to Quartz cron format
 - Convert Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (file_arrival, table_update)
 - Extract inline Python callables, SQL strings, and bash commands into standalone source files

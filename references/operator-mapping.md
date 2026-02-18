@@ -153,11 +153,11 @@ spark_jar = SparkSubmitOperator(
 
 ---
 
-### DatabricksSubmitRunOperator
+### DatabricksSubmitRunOperator / DatabricksSubmitRunDeferrableOperator
 
 **DABs task type:** native DABs task (extract `json` payload directly)
 
-The operator's `json` parameter already describes a Databricks task. Translate the JSON structure directly into DABs YAML.
+The operator's `json` parameter already describes a Databricks task. Translate the JSON structure directly into DABs YAML. The deferrable variant (`DatabricksSubmitRunDeferrableOperator`) maps identically -- the deferrable behavior is an Airflow scheduler optimization that has no DABs equivalent.
 
 **Airflow:**
 
@@ -194,11 +194,11 @@ submit_run = DatabricksSubmitRunOperator(
 
 ---
 
-### DatabricksRunNowOperator
+### DatabricksRunNowOperator / DatabricksRunNowDeferrableOperator
 
 **DABs task type:** `run_job_task`
 
-Map `job_id` directly. Map `notebook_params`, `python_params`, or `jar_params` to `job_parameters`.
+Map `job_id` directly. Map `notebook_params`, `python_params`, or `jar_params` to `job_parameters`. The deferrable variant maps identically.
 
 **Airflow:**
 
@@ -219,6 +219,139 @@ trigger_job = DatabricksRunNowOperator(
     job_parameters:
       env: "prod"
       date: "{{job.parameters.run_date}}"
+```
+
+---
+
+### DatabricksNotebookOperator
+
+**DABs task type:** `notebook_task`
+
+Direct 1:1 mapping. The operator already runs a Databricks notebook with parameters -- translate to `notebook_task` with `base_parameters`. Map `source` to the notebook path in the bundle (copy notebook into `src/` if the path is workspace-local).
+
+**Airflow:**
+
+```python
+from airflow.providers.databricks.operators.databricks import DatabricksNotebookOperator
+
+notebook_run = DatabricksNotebookOperator(
+    task_id="run_etl_notebook",
+    databricks_conn_id="databricks_default",
+    notebook_path="/Workspace/Users/user@example.com/etl_pipeline",
+    notebook_params={"env": "prod", "date": "{{ ds }}"},
+    source="WORKSPACE",
+    new_cluster={
+        "spark_version": "15.4.x-scala2.12",
+        "node_type_id": "i3.xlarge",
+        "num_workers": 2,
+    },
+)
+```
+
+**DABs YAML:**
+
+```yaml
+- task_key: run_etl_notebook
+  job_cluster_key: shared_cluster
+  notebook_task:
+    notebook_path: ../src/etl_pipeline.py
+    source: WORKSPACE
+    base_parameters:
+      env: "prod"
+      date: "{{job.parameters.run_date}}"
+```
+
+---
+
+### DatabricksSqlOperator / DatabricksSQLStatementsOperator
+
+**DABs task type:** `sql_task`
+
+Both operators execute SQL on a Databricks SQL warehouse. `DatabricksSqlOperator` uses the `sql` parameter; `DatabricksSQLStatementsOperator` uses the Statement Execution API. Both map to `sql_task`. Extract inline SQL to a `.sql` file. If `sql` references an existing query ID, use `sql_task.query.query_id`.
+
+**Airflow:**
+
+```python
+from airflow.providers.databricks.operators.databricks_sql import DatabricksSqlOperator
+
+sql_report = DatabricksSqlOperator(
+    task_id="daily_aggregation",
+    databricks_conn_id="databricks_default",
+    sql="""
+        CREATE OR REPLACE TABLE gold.daily_metrics AS
+        SELECT date, COUNT(*) as events, SUM(revenue) as total
+        FROM silver.transactions
+        WHERE date = '{{ ds }}'
+        GROUP BY date
+    """,
+    http_path="/sql/1.0/warehouses/abc123",
+)
+```
+
+**DABs YAML:**
+
+```yaml
+- task_key: daily_aggregation
+  sql_task:
+    warehouse_id: ${var.warehouse_id}
+    file:
+      path: ../src/daily_aggregation.sql
+      source: WORKSPACE
+```
+
+**Generated `src/daily_aggregation.sql`:**
+
+```sql
+CREATE OR REPLACE TABLE gold.daily_metrics AS
+SELECT date, COUNT(*) as events, SUM(revenue) as total
+FROM silver.transactions
+WHERE date = '{{job.parameters.run_date}}'
+GROUP BY date
+```
+
+---
+
+### DatabricksCopyIntoOperator
+
+**DABs task type:** `sql_task`
+
+The operator runs a `COPY INTO` SQL command to ingest files into a Delta table. Extract the COPY INTO statement into a `.sql` file and reference via `sql_task`.
+
+**Airflow:**
+
+```python
+from airflow.providers.databricks.operators.databricks import DatabricksCopyIntoOperator
+
+ingest = DatabricksCopyIntoOperator(
+    task_id="ingest_csv_data",
+    databricks_conn_id="databricks_default",
+    table_name="bronze.raw_events",
+    file_location="s3://data-landing/events/",
+    file_format="CSV",
+    format_options={"header": "true", "inferSchema": "true"},
+    force_copy=True,
+)
+```
+
+**DABs YAML:**
+
+```yaml
+- task_key: ingest_csv_data
+  sql_task:
+    warehouse_id: ${var.warehouse_id}
+    file:
+      path: ../src/ingest_csv_data.sql
+      source: WORKSPACE
+```
+
+**Generated `src/ingest_csv_data.sql`:**
+
+```sql
+COPY INTO bronze.raw_events
+FROM 's3://data-landing/events/'
+FILEFORMAT = CSV
+FORMAT_OPTIONS ('header' = 'true', 'inferSchema' = 'true')
+COPY_OPTIONS ('force' = 'true')
 ```
 
 ---
@@ -618,9 +751,174 @@ email_notifications:
 
 ---
 
+### DatabricksWorkflowTaskGroup / DatabricksTaskOperator
+
+**DABs equivalent:** flatten into individual DABs job tasks.
+
+`DatabricksWorkflowTaskGroup` defines a multi-task Databricks workflow within Airflow, with each task defined by `DatabricksTaskOperator`. This is the closest Airflow construct to a DABs job. Each `DatabricksTaskOperator` already specifies a Databricks task type (`notebook_task`, `spark_python_task`, etc.), so the migration is nearly 1:1: extract each child task into a DABs task entry, preserve `depends_on` relationships, and map the group's shared cluster to a `job_cluster_key`.
+
+**Airflow:**
+
+```python
+from airflow.providers.databricks.operators.databricks import (
+    DatabricksTaskOperator,
+    DatabricksWorkflowTaskGroup,
+)
+
+with DatabricksWorkflowTaskGroup(
+    group_id="etl_workflow",
+    databricks_conn_id="databricks_default",
+    job_clusters=[{
+        "job_cluster_key": "etl_cluster",
+        "new_cluster": {
+            "spark_version": "15.4.x-scala2.12",
+            "node_type_id": "i3.xlarge",
+            "num_workers": 4,
+        },
+    }],
+) as wf:
+    extract = DatabricksTaskOperator(
+        task_id="extract",
+        notebook_task={"notebook_path": "/Workspace/etl/extract"},
+        job_cluster_key="etl_cluster",
+    )
+    transform = DatabricksTaskOperator(
+        task_id="transform",
+        notebook_task={"notebook_path": "/Workspace/etl/transform"},
+        job_cluster_key="etl_cluster",
+    )
+    load = DatabricksTaskOperator(
+        task_id="load",
+        notebook_task={"notebook_path": "/Workspace/etl/load"},
+        job_cluster_key="etl_cluster",
+    )
+    extract >> transform >> load
+```
+
+**DABs YAML:**
+
+```yaml
+job_clusters:
+  - job_cluster_key: etl_cluster
+    new_cluster:
+      spark_version: "15.4.x-scala2.12"
+      node_type_id: ${var.node_type_id}
+      num_workers: 4
+
+tasks:
+  - task_key: extract
+    job_cluster_key: etl_cluster
+    notebook_task:
+      notebook_path: ../src/extract.py
+
+  - task_key: transform
+    depends_on:
+      - task_key: extract
+    job_cluster_key: etl_cluster
+    notebook_task:
+      notebook_path: ../src/transform.py
+
+  - task_key: load
+    depends_on:
+      - task_key: transform
+    job_cluster_key: etl_cluster
+    notebook_task:
+      notebook_path: ../src/load.py
+```
+
+---
+
+### DatabricksCreateJobsOperator
+
+**DABs equivalent:** absorbed by `databricks bundle deploy` — omit from job tasks.
+
+This operator programmatically creates Databricks jobs via the Jobs API. In a DABs migration, the job definition itself is the bundle YAML. Remove `DatabricksCreateJobsOperator` tasks from the task graph and instead ensure the job configuration from its `json` parameter is reflected in the generated `resources/<job>_job.yml`. Add a note to `MIGRATION_NOTES.md` explaining that job creation is now handled by `databricks bundle deploy`.
+
+---
+
+### DatabricksReposCreateOperator / DatabricksReposUpdateOperator / DatabricksReposDeleteOperator
+
+**DABs equivalent:** not applicable — infrastructure/repo management, not a job task.
+
+These operators manage Databricks Repos (Git integration). They have no equivalent as DABs job tasks. If a DAG uses these to sync code before running notebooks, note in `MIGRATION_NOTES.md` that DABs handles code deployment natively via `databricks bundle deploy`. Remove these tasks from the job definition.
+
+---
+
 ## Tier 3: Sensor to Trigger Mappings
 
 Airflow sensors that wait for external conditions map to DABs job-level triggers.
+
+---
+
+### DatabricksSqlSensor / DatabricksSQLStatementsSensor
+
+**DABs equivalent:** `trigger.table_update` or polling `notebook_task`
+
+These sensors execute SQL on a Databricks SQL warehouse and wait for a condition. If the SQL checks for table freshness or row existence, convert to `trigger.table_update`. If the SQL checks an arbitrary condition (e.g., a config flag), wrap it in a polling `notebook_task`.
+
+**Airflow:**
+
+```python
+from airflow.providers.databricks.sensors.databricks_sql import DatabricksSqlSensor
+
+wait_for_data = DatabricksSqlSensor(
+    task_id="wait_for_daily_data",
+    databricks_conn_id="databricks_default",
+    sql="SELECT COUNT(*) FROM silver.transactions WHERE date = '{{ ds }}'",
+    success=lambda result: result[0][0] > 0,
+    poke_interval=300,
+    timeout=3600,
+)
+```
+
+**DABs YAML (table trigger):**
+
+```yaml
+trigger:
+  table_update:
+    condition: ANY_UPDATED
+    table_names:
+      - "main.silver.transactions"
+    min_time_between_triggers_seconds: 300
+```
+
+> NOTE: If the sensor checks an arbitrary SQL condition (not table freshness), convert to a `notebook_task` that polls and raises on timeout. Add to `MIGRATION_NOTES.md`.
+
+---
+
+### DatabricksPartitionSensor
+
+**DABs equivalent:** `trigger.table_update` or polling `notebook_task`
+
+Waits for a specific partition to appear in a Delta table. If the table is managed via Unity Catalog, convert to `trigger.table_update`. For complex partition-level checks, use a polling `notebook_task`.
+
+**Airflow:**
+
+```python
+from airflow.providers.databricks.sensors.databricks_partition import DatabricksPartitionSensor
+
+wait_for_partition = DatabricksPartitionSensor(
+    task_id="wait_for_partition",
+    databricks_conn_id="databricks_default",
+    table_name="main.silver.events",
+    partitions={"date": "2024-01-15"},
+    poke_interval=300,
+    timeout=3600,
+)
+```
+
+**DABs YAML (table trigger):**
+
+```yaml
+trigger:
+  table_update:
+    condition: ANY_UPDATED
+    table_names:
+      - "main.silver.events"
+    min_time_between_triggers_seconds: 300
+```
+
+> NOTE: DABs `trigger.table_update` fires on any table update, not partition-specific changes. If partition-level precision is required, use a polling `notebook_task` that checks `DESCRIBE DETAIL` or partition metadata. Add to `MIGRATION_NOTES.md`.
 
 ---
 
