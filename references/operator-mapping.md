@@ -229,6 +229,10 @@ trigger_job = DatabricksRunNowOperator(
 
 Direct 1:1 mapping. The operator already runs a Databricks notebook with parameters -- translate to `notebook_task` with `base_parameters`. Map `source` to the notebook path in the bundle (copy notebook into `src/` if the path is workspace-local).
 
+Compute mapping:
+- If the Airflow task uses `new_cluster`, emit `new_cluster` on the DABs task.
+- If it uses `job_cluster_key` or `existing_cluster_id`, preserve that field in DABs.
+
 **Airflow:**
 
 ```python
@@ -252,7 +256,10 @@ notebook_run = DatabricksNotebookOperator(
 
 ```yaml
 - task_key: run_etl_notebook
-  job_cluster_key: shared_cluster
+  new_cluster:
+    spark_version: ${var.spark_version}
+    node_type_id: ${var.node_type_id}
+    num_workers: 2
   notebook_task:
     notebook_path: ../src/etl_pipeline.py
     source: WORKSPACE
@@ -265,9 +272,15 @@ notebook_run = DatabricksNotebookOperator(
 
 ### DatabricksSqlOperator / DatabricksSQLStatementsOperator
 
-**DABs task type:** `sql_task`
+**DABs task type:** `sql_task` (warehouse-backed) or `notebook_task`/`spark_python_task` (cluster-backed SQL)
 
-Both operators execute SQL on a Databricks SQL warehouse. `DatabricksSqlOperator` uses the `sql` parameter; `DatabricksSQLStatementsOperator` uses the Statement Execution API. Both map to `sql_task`. Extract inline SQL to a `.sql` file. If `sql` references an existing query ID, use `sql_task.query.query_id`.
+`DatabricksSQLStatementsOperator` uses the Statement Execution API and requires a warehouse context, so it maps directly to `sql_task`.
+
+`DatabricksSqlOperator` supports either a SQL warehouse or a Databricks cluster (`http_path`). Map by backend:
+- Warehouse-backed (`sql_endpoint_name` or warehouse `http_path`) -> `sql_task`
+- Cluster-backed (`http_path` for interactive cluster) -> `notebook_task`/`spark_python_task` that executes `spark.sql(...)` on cluster compute
+
+Extract inline SQL to a `.sql` file when using `sql_task`. If SQL references an existing query ID, use `sql_task.query.query_id`.
 
 **Airflow:**
 
@@ -313,14 +326,18 @@ GROUP BY date
 
 ### DatabricksCopyIntoOperator
 
-**DABs task type:** `sql_task`
+**DABs task type:** `sql_task` (warehouse-backed) or `notebook_task`/`spark_python_task` (cluster-backed SQL)
 
-The operator runs a `COPY INTO` SQL command to ingest files into a Delta table. Extract the COPY INTO statement into a `.sql` file and reference via `sql_task`.
+The operator runs a `COPY INTO` SQL command to ingest files into a Delta table.
+
+Map by backend:
+- Warehouse-backed (`sql_endpoint_name` or warehouse `http_path`) -> `sql_task` with extracted `.sql`
+- Cluster-backed (`http_path` for interactive cluster) -> cluster compute task (`notebook_task`/`spark_python_task`) that runs `spark.sql("COPY INTO ...")`
 
 **Airflow:**
 
 ```python
-from airflow.providers.databricks.operators.databricks import DatabricksCopyIntoOperator
+from airflow.providers.databricks.operators.databricks_sql import DatabricksCopyIntoOperator
 
 ingest = DatabricksCopyIntoOperator(
     task_id="ingest_csv_data",
@@ -760,10 +777,8 @@ email_notifications:
 **Airflow:**
 
 ```python
-from airflow.providers.databricks.operators.databricks import (
-    DatabricksTaskOperator,
-    DatabricksWorkflowTaskGroup,
-)
+from airflow.providers.databricks.operators.databricks import DatabricksTaskOperator
+from airflow.providers.databricks.operators.databricks_workflow import DatabricksWorkflowTaskGroup
 
 with DatabricksWorkflowTaskGroup(
     group_id="etl_workflow",
@@ -852,9 +867,16 @@ Airflow sensors that wait for external conditions map to DABs job-level triggers
 
 ### DatabricksSqlSensor / DatabricksSQLStatementsSensor
 
-**DABs equivalent:** `trigger.table_update` or polling `notebook_task`
+**DABs equivalent:** `depends_on`, `trigger.table_update`, or polling task (intent-dependent)
 
-These sensors execute SQL on a Databricks SQL warehouse and wait for a condition. If the SQL checks for table freshness or row existence, convert to `trigger.table_update`. If the SQL checks an arbitrary condition (e.g., a config flag), wrap it in a polling `notebook_task`.
+These sensors are blocking/wait semantics in Airflow, so they do not always become triggers.
+
+Use this decision order:
+1. If waiting on a statement already submitted by an upstream task (`DatabricksSQLStatementsSensor` with `statement_id`), convert to a normal task dependency (`depends_on`) on that upstream task. Do not convert to a trigger.
+2. If the sensor is effectively waiting for external table freshness or table updates, convert to `trigger.table_update`.
+3. If it checks an arbitrary SQL condition (for example, a business rule or feature flag), convert to a polling `notebook_task` (or `spark_python_task`) with timeout handling.
+
+Note: `DatabricksSQLStatementsSensor` can either submit a statement (`statement`) or wait on an existing statement (`statement_id`); preserve that intent during conversion.
 
 **Airflow:**
 
@@ -882,7 +904,7 @@ trigger:
     min_time_between_triggers_seconds: 300
 ```
 
-> NOTE: If the sensor checks an arbitrary SQL condition (not table freshness), convert to a `notebook_task` that polls and raises on timeout. Add to `MIGRATION_NOTES.md`.
+> NOTE: If using `statement_id`, prefer `depends_on` over triggers. If the sensor checks an arbitrary SQL condition (not table freshness), convert to a polling compute task that raises on timeout. Add this decision to `MIGRATION_NOTES.md`.
 
 ---
 
