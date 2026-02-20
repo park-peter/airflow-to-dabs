@@ -40,7 +40,55 @@ Full mapping details: [`references/operator-mapping.md`](references/operator-map
 
 ## Installation
 
-Pick one scope (personal or project) unless you intentionally want both.
+### Quick install (recommended)
+
+Clone the repo, inspect the script if you like, then run it:
+
+```bash
+git clone https://github.com/park-peter/airflow-to-dabs.git
+cd airflow-to-dabs
+./install.sh
+```
+
+The interactive installer prompts you to choose a platform and scope:
+
+```
+Select platform:
+  1) Cursor
+  2) Claude Code
+  3) Codex CLI
+  4) VS Code + Copilot
+
+Select scope:
+  1) Global (all projects)
+  2) Project (current directory only)
+```
+
+### Non-interactive (flags)
+
+```bash
+./install.sh --platform cursor --scope global
+```
+
+### Uninstall
+
+```bash
+./install.sh --platform cursor --scope global --uninstall
+```
+
+### Remote one-liner (optional)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/park-peter/airflow-to-dabs/main/install.sh | sh
+```
+
+Pass flags with `sh -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/park-peter/airflow-to-dabs/main/install.sh | sh -s -- --platform claude --scope project
+```
+
+### Manual installation
 
 <details>
 <summary><strong>Cursor</strong></summary>
@@ -66,8 +114,6 @@ else
   git clone https://github.com/park-peter/airflow-to-dabs.git .cursor/skills/airflow-to-dabs
 fi
 ```
-
-Cursor reads `SKILL.md` from `~/.cursor/skills/` (global) or `.cursor/skills/` (project).
 
 </details>
 
@@ -96,8 +142,6 @@ else
 fi
 ```
 
-Claude Code reads `SKILL.md` from `~/.claude/skills/` (personal) or `.claude/skills/` (project).
-
 </details>
 
 <details>
@@ -114,14 +158,22 @@ else
 fi
 touch ~/.codex/AGENTS.md
 cp ~/.codex/AGENTS.md ~/.codex/AGENTS.md.bak.$(date +%Y%m%d%H%M%S)
-if ! grep -q "BEGIN airflow-to-dabs" ~/.codex/AGENTS.md; then
-  {
-    echo
-    echo "<!-- BEGIN airflow-to-dabs -->"
-    cat ~/.codex/skills/airflow-to-dabs/AGENTS.md
-    echo "<!-- END airflow-to-dabs -->"
-  } >> ~/.codex/AGENTS.md
+BEGIN_MARK="<!-- BEGIN airflow-to-dabs -->"
+END_MARK="<!-- END airflow-to-dabs -->"
+if grep -Fq "$BEGIN_MARK" ~/.codex/AGENTS.md && grep -Fq "$END_MARK" ~/.codex/AGENTS.md; then
+  awk -v begin="$BEGIN_MARK" -v end="$END_MARK" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' ~/.codex/AGENTS.md > ~/.codex/AGENTS.md.tmp
+  mv ~/.codex/AGENTS.md.tmp ~/.codex/AGENTS.md
 fi
+{
+  [ -s ~/.codex/AGENTS.md ] && echo
+  echo "$BEGIN_MARK"
+  cat ~/.codex/skills/airflow-to-dabs/AGENTS.md
+  echo "$END_MARK"
+} >> ~/.codex/AGENTS.md
 ```
 
 **Project-scoped** (single project):
@@ -135,17 +187,23 @@ else
 fi
 touch ./AGENTS.md
 cp ./AGENTS.md ./AGENTS.md.bak.$(date +%Y%m%d%H%M%S)
-if ! grep -q "BEGIN airflow-to-dabs" ./AGENTS.md; then
-  {
-    echo
-    echo "<!-- BEGIN airflow-to-dabs -->"
-    cat .codex/skills/airflow-to-dabs/AGENTS.md
-    echo "<!-- END airflow-to-dabs -->"
-  } >> ./AGENTS.md
+BEGIN_MARK="<!-- BEGIN airflow-to-dabs -->"
+END_MARK="<!-- END airflow-to-dabs -->"
+if grep -Fq "$BEGIN_MARK" ./AGENTS.md && grep -Fq "$END_MARK" ./AGENTS.md; then
+  awk -v begin="$BEGIN_MARK" -v end="$END_MARK" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' ./AGENTS.md > ./AGENTS.md.tmp
+  mv ./AGENTS.md.tmp ./AGENTS.md
 fi
+{
+  [ -s ./AGENTS.md ] && echo
+  echo "$BEGIN_MARK"
+  cat .codex/skills/airflow-to-dabs/AGENTS.md
+  echo "$END_MARK"
+} >> ./AGENTS.md
 ```
-
-Codex CLI reads `AGENTS.md` from `~/.codex/` (global) or the project root. The install appends a marker-delimited block — it backs up the file first and skips the append if the block already exists.
 
 </details>
 
@@ -182,8 +240,6 @@ fi
 
 rm -rf "$SKILL_DIR"
 ```
-
-Copilot reads `.github/copilot-instructions.md` from the project root and applies it to all Copilot Chat requests in the workspace. The install appends a marker-delimited block — it backs up the file first and replaces the block if it already exists.
 
 </details>
 
