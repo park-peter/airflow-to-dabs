@@ -9,8 +9,8 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 | Platform | Instruction File | Install Path |
 |----------|-----------------|--------------|
 | **Cursor** | `SKILL.md` | `~/.cursor/skills/airflow-to-dabs/` |
-| **Claude Code** | `SKILL.md` | `~/.claude/skills/airflow-to-dabs/` or `.claude/skills/airflow-to-dabs/` |
-| **Codex CLI** | `AGENTS.md` | Skill repo: `~/.codex/skills/airflow-to-dabs/` or `.codex/skills/airflow-to-dabs/`; active instructions: `~/.codex/AGENTS.md` or `./AGENTS.md` |
+| **Claude Code** | `SKILL.md` | `~/.claude/skills/airflow-to-dabs/` |
+| **Codex CLI** | `AGENTS.md` | `~/.codex/AGENTS.md` or `./AGENTS.md` |
 
 ## What It Does
 
@@ -39,11 +39,10 @@ Full mapping details: [`references/operator-mapping.md`](references/operator-map
 
 ## Installation
 
-This skill works with **Cursor**, **Claude Code**, and **Codex CLI**. Clone the repo into the appropriate directory for your platform:
+Pick one scope (personal or project) unless you intentionally want both.
 
-Install in either personal scope or project scope, not both, unless you intentionally want both available.
-
-### Cursor
+<details>
+<summary><strong>Cursor</strong></summary>
 
 ```bash
 mkdir -p ~/.cursor/skills
@@ -54,22 +53,27 @@ else
 fi
 ```
 
-Cursor auto-discovers skills in `~/.cursor/skills/`. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, or DABs generation from Airflow.
+Cursor auto-discovers skills in `~/.cursor/skills/`. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, or DABs generation.
 
-### Claude Code
+</details>
+
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+**Personal** (all projects):
 
 ```bash
-# Choose ONE scope.
-
-# Personal (all projects)
 mkdir -p ~/.claude/skills
 if [ -d ~/.claude/skills/airflow-to-dabs/.git ]; then
   git -C ~/.claude/skills/airflow-to-dabs pull --ff-only
 else
   git clone https://github.com/park-peter/airflow-to-dabs.git ~/.claude/skills/airflow-to-dabs
 fi
+```
 
-# Project-scoped (single project)
+**Project-scoped** (single project):
+
+```bash
 mkdir -p .claude/skills
 if [ -d .claude/skills/airflow-to-dabs/.git ]; then
   git -C .claude/skills/airflow-to-dabs pull --ff-only
@@ -78,15 +82,19 @@ else
 fi
 ```
 
-Claude Code reads the `SKILL.md` frontmatter and instructions from `.claude/skills/` or `~/.claude/skills/`.
+Claude Code reads `SKILL.md` from `~/.claude/skills/` (personal) or `.claude/skills/` (project).
 
-### Codex CLI
+</details>
+
+<details>
+<summary><strong>Codex CLI</strong></summary>
+
+Codex CLI reads `AGENTS.md` from the project root or `~/.codex/`. The install clones the skill repo and appends a marker-delimited block to your `AGENTS.md` — it backs up the file first and skips the append if the block already exists.
+
+**Global** (all projects):
 
 ```bash
-# Choose ONE scope.
-
-# Global (all projects)
-mkdir -p ~/.codex/skills ~/.codex
+mkdir -p ~/.codex/skills
 if [ -d ~/.codex/skills/airflow-to-dabs/.git ]; then
   git -C ~/.codex/skills/airflow-to-dabs pull --ff-only
 else
@@ -102,8 +110,11 @@ if ! grep -q "BEGIN airflow-to-dabs" ~/.codex/AGENTS.md; then
     echo "<!-- END airflow-to-dabs -->"
   } >> ~/.codex/AGENTS.md
 fi
+```
 
-# Project-scoped (single project)
+**Project-scoped** (single project):
+
+```bash
 mkdir -p .codex/skills
 if [ -d .codex/skills/airflow-to-dabs/.git ]; then
   git -C .codex/skills/airflow-to-dabs pull --ff-only
@@ -116,13 +127,13 @@ if ! grep -q "BEGIN airflow-to-dabs" ./AGENTS.md; then
   {
     echo
     echo "<!-- BEGIN airflow-to-dabs -->"
-    cat ./.codex/skills/airflow-to-dabs/AGENTS.md
+    cat .codex/skills/airflow-to-dabs/AGENTS.md
     echo "<!-- END airflow-to-dabs -->"
   } >> ./AGENTS.md
 fi
 ```
 
-Codex CLI reads `AGENTS.md` from the project root or `~/.codex/`. This flow is non-destructive: it creates a timestamped backup and appends a marker-delimited skill block only if it is not already present.
+</details>
 
 ## Usage
 
