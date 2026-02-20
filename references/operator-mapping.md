@@ -859,6 +859,153 @@ These operators manage Databricks Repos (Git integration). They have no equivale
 
 ---
 
+### KubernetesPodOperator / DockerOperator
+
+**DABs task type:** `spark_python_task` or `spark_jar_task` on a single-node cluster with `docker_image` (Databricks Container Services)
+
+These operators run a Docker image as an isolated task. On Databricks, the equivalent is a **single-node job cluster with a custom Docker image** via Databricks Container Services (DCS). The Docker image becomes the cluster environment, and a DABs task runs inside it.
+
+> **Limitations:** Databricks Container Services (DCS) is available on AWS, Azure, and GCP (workspace/region availability can vary). Not supported on serverless compute. Custom containers are not supported on standard/shared access mode; use dedicated/single-user style access mode. The container image must satisfy DCS prerequisites (include `bash`, `iproute2`, `coreutils`, `procps`, `sudo`, and a compatible JDK; Ubuntu-based images are common, and Alpine is also supported when required packages are installed). The image must start as root; clusters fail with `CONTAINER_LAUNCH_FAILURE` when the effective startup user is non-root. Databricks ignores image `ENTRYPOINT`/`CMD` and controls process launch.
+
+#### Decision tree
+
+Inspect the operator's `image`, `cmds`, and `arguments` fields to determine the conversion:
+
+1. **Python-based image** (image contains `python`, or `cmds` starts with `python`/`pip`):
+   → `spark_python_task` pointing to the script. Install deps in the Docker image or via `%pip`.
+
+2. **JVM-based image** (image contains `java`/`jdk`/`scala`, or `cmds` invokes a JAR):
+   → `spark_jar_task` with the JAR bundled in the image or uploaded to a UC volume.
+
+3. **Other runtime** (Go, Rust, Node, shell script, custom binary):
+   → `spark_python_task` with a thin Python wrapper (`entrypoint.py`) that calls `subprocess.run()` to invoke the binary. The binary must be installed in the Docker image.
+
+4. **Image is missing DCS prerequisites** (for example starts as non-root, missing required runtime tools, or incompatible base image setup):
+   → Flag in `MIGRATION_NOTES.md`: "Image must be updated for Databricks Container Services prerequisites (root startup user, required OS utilities, and Java runtime)."
+
+5. **K8s-specific features** (sidecar containers, init containers, persistent volume claims, service accounts):
+   → Flag in `MIGRATION_NOTES.md`: "No Databricks equivalent. Redesign or keep on K8s."
+
+6. **Workspace or policy blocks custom containers** (for example serverless, standard/shared access mode, or cluster policy forbids `docker_image`):
+   → Flag in `MIGRATION_NOTES.md`: "Custom container execution is blocked in the target workspace/policy; redesign task or run externally."
+
+#### Airflow (Python image):
+
+```python
+from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+
+run_etl = KubernetesPodOperator(
+    task_id="run_etl_container",
+    image="myregistry.azurecr.io/etl-pipeline:2.1.0",
+    cmds=["python"],
+    arguments=["scripts/run_etl.py", "--date", "{{ ds }}"],
+    env_vars={"DB_SECRET": "{{ var.value.db_password }}"},
+    namespace="data-pipelines",
+    get_logs=True,
+)
+```
+
+**DABs YAML:**
+
+```yaml
+job_clusters:
+  - job_cluster_key: etl_container
+    new_cluster:
+      spark_version: "15.4.x-scala2.12"
+      node_type_id: ${var.node_type_id}
+      data_security_mode: SINGLE_USER
+      num_workers: 0
+      spark_conf:
+        spark.databricks.cluster.profile: singleNode
+        spark.master: local[*]
+      custom_tags:
+        ResourceClass: SingleNode
+      docker_image:
+        url: "myregistry.azurecr.io/etl-pipeline:2.1.0"
+        basic_auth:
+          username: "{{secrets/docker-scope/registry-user}}"
+          password: "{{secrets/docker-scope/registry-pass}}"
+
+tasks:
+  - task_key: run_etl_container
+    job_cluster_key: etl_container
+    spark_python_task:
+      python_file: ../src/run_etl.py
+      parameters:
+        - "--date"
+        - "{{job.parameters.run_date}}"
+```
+
+> NOTE: `env_vars` referencing Airflow Variables or secrets must be converted to `dbutils.secrets.get()` calls inside the script, or passed as `base_parameters`. K8s `namespace` and resource requests/limits have no DABs equivalent — cluster sizing is controlled by `node_type_id` and `num_workers`.
+
+#### Airflow (non-Python binary):
+
+```python
+run_go_binary = KubernetesPodOperator(
+    task_id="run_go_processor",
+    image="myregistry.azurecr.io/go-processor:1.0.0",
+    cmds=["./processor"],
+    arguments=["--input", "s3://bucket/data/", "--date", "{{ ds }}"],
+    namespace="data-pipelines",
+)
+```
+
+**DABs YAML:**
+
+```yaml
+job_clusters:
+  - job_cluster_key: go_processor_container
+    new_cluster:
+      spark_version: "15.4.x-scala2.12"
+      node_type_id: ${var.node_type_id}
+      data_security_mode: SINGLE_USER
+      num_workers: 0
+      spark_conf:
+        spark.databricks.cluster.profile: singleNode
+        spark.master: local[*]
+      custom_tags:
+        ResourceClass: SingleNode
+      docker_image:
+        url: "myregistry.azurecr.io/go-processor:1.0.0"
+        basic_auth:
+          username: "{{secrets/docker-scope/registry-user}}"
+          password: "{{secrets/docker-scope/registry-pass}}"
+
+tasks:
+  - task_key: run_go_processor
+    job_cluster_key: go_processor_container
+    spark_python_task:
+      python_file: ../src/run_go_processor.py
+      parameters:
+        - "--input"
+        - "s3://bucket/data/"
+        - "--date"
+        - "{{job.parameters.run_date}}"
+```
+
+**Generated `src/run_go_processor.py`:**
+
+```python
+# Databricks notebook source
+import subprocess
+import sys
+
+args = sys.argv[1:]
+result = subprocess.run(
+    ["./processor"] + args,
+    capture_output=True, text=True
+)
+print(result.stdout)
+if result.returncode != 0:
+    raise RuntimeError(f"Container process failed (exit {result.returncode}): {result.stderr}")
+```
+
+#### DockerOperator
+
+`DockerOperator` follows the same pattern as `KubernetesPodOperator`. Map `image` to `docker_image.url`, `command` to the task entrypoint, and `environment` to secrets or parameters. The Docker-in-Docker execution model is replaced by DCS running the image natively on the cluster node.
+
+---
+
 ## Tier 3: Sensor to Trigger Mappings
 
 Airflow sensors that wait for external conditions map to DABs job-level triggers.
@@ -1075,8 +1222,6 @@ These operators have no direct DABs equivalent. Flag them in `MIGRATION_NOTES.md
 | Airflow Operator | Suggested Fallback | Notes |
 |---|---|---|
 | Custom `BaseOperator` subclass | `notebook_task` | Extract operator logic into a notebook. Review `execute()` method. |
-| `KubernetesPodOperator` | `notebook_task` or external API | No container orchestration in Lakeflow Jobs. Consider Databricks container services or calling an external API. |
-| `DockerOperator` | `notebook_task` or external API | Same as above. |
 | `HttpSensor` / `SimpleHttpOperator` | `notebook_task` wrapping `requests` | Use a notebook with the `requests` library for HTTP calls. |
 | `LivyOperator` | `spark_python_task` or `notebook_task` | Livy is unnecessary on Databricks; submit Spark code directly. See `hadoop-migration-guide.md`. |
 | `SqoopOperator` (import) | Lakeflow Connect pipeline | Managed RDBMS-to-lakehouse ingestion with CDC. Not a DABs task -- create a pipeline resource. See `hadoop-migration-guide.md`. |
