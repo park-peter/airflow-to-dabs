@@ -151,15 +151,30 @@ Produces a single bundle with one `databricks.yml` and a separate job resource p
 
 Produces a standalone bundle directory for that one DAG.
 
-## Validation and QA
+## Post-Generation Configuration
 
-After generation, validate the output bundle before deployment:
+The generated bundle uses placeholders for environment-specific values. Replace these before deploying, or provide the values in your prompt to skip this step (e.g., "use warehouse ID abc123 and spark version 15.4.x-scala2.12").
+
+| Placeholder | Location | Example value |
+|---|---|---|
+| `<DEV_WORKSPACE_URL>` | `databricks.yml` → `targets.dev.workspace.host` | `https://my-dev.cloud.databricks.com` |
+| `<PROD_WORKSPACE_URL>` | `databricks.yml` → `targets.prod.workspace.host` | `https://my-prod.cloud.databricks.com` |
+| `<SERVICE_PRINCIPAL>` | `databricks.yml` → `targets.prod.run_as` | `my-deploy-sp` |
+| `<SPARK_VERSION>` | `databricks.yml` → `variables.spark_version` | `15.4.x-scala2.12` |
+| `<NODE_TYPE_ID>` | `databricks.yml` → `variables.node_type_id` | `i3.xlarge` (AWS), `Standard_D4s_v3` (Azure) |
+| `<WAREHOUSE_ID>` | `databricks.yml` → `variables.warehouse_id` | `abc123def456` |
+
+> **Tip:** If you've already configured auth via `~/.databrickscfg` or `DATABRICKS_HOST`, you can remove `workspace.host` from targets entirely — the CLI picks it up automatically.
+
+## Validation
+
+After filling in placeholders, validate the bundle before deploying:
 
 ```bash
 databricks bundle validate -t dev
 ```
 
-If Databricks auth is not configured yet, run schema checks offline and resolve structural issues first:
+If Databricks auth is not configured yet, run schema checks offline first:
 
 ```bash
 databricks bundle schema
