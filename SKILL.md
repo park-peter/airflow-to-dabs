@@ -61,7 +61,7 @@ Present a summary table to the user before proceeding:
 
 ### Phase 2: Map Operators to DABs Task Types
 
-Read `references/operator-mapping.md` for the authoritative mapping table.
+Read `references/operator-mapping.md` in this skill's directory for the authoritative mapping table.
 
 For each task in the inventory:
 
@@ -70,14 +70,14 @@ For each task in the inventory:
    - `BranchPythonOperator`: If the branching logic is a simple comparison, use `condition_task`. If complex, use a two-step pattern (notebook + condition).
    - `DummyOperator`/`EmptyOperator`: Remove from the task list. Rewire `depends_on` so downstream tasks point to the dummy's upstream tasks.
    - `SubDagOperator`/`TaskGroup`: Flatten into the parent job with prefixed task keys, or extract to a separate job via `run_job_task`.
-3. **Tier 3 (sensors)**: Convert to job-level triggers. Read `references/schedule-trigger-mapping.md`.
+3. **Tier 3 (sensors)**: Convert to job-level triggers. Read `references/schedule-trigger-mapping.md` in this skill's directory.
    - File sensors -> `trigger.file_arrival`
    - Table/SQL sensors -> `trigger.table_update`
    - External task sensors -> `depends_on`, `run_job_task`, or `trigger.table_update`
    - Remove sensor tasks from the task list (they become job-level configuration).
 4. **Tier 4 (unsupported)**: Flag for manual review. Suggest `notebook_task` as fallback. Add entry to `MIGRATION_NOTES.md`.
 
-For schedule conversion, read `references/schedule-trigger-mapping.md`:
+For schedule conversion, read `references/schedule-trigger-mapping.md` in this skill's directory:
 - Convert Airflow 5-field cron to 6-field Quartz cron (prepend `0` for seconds, adjust day-of-week numbering, and normalize Sunday `0/7 -> 1`)
 - Convert Airflow presets (`@daily`, `@hourly`, etc.) to Quartz equivalents
 - Extract timezone from `default_args` or DAG `start_date`
@@ -86,7 +86,7 @@ For schedule conversion, read `references/schedule-trigger-mapping.md`:
 
 ### Phase 3: Generate the DABs Project
 
-Produce the following output files. Read `references/dab-schema-reference.md` for the complete YAML schema. Use `assets/templates/databricks.yml.tmpl` and `assets/templates/job-resource.yml.tmpl` as starting skeletons.
+Produce the following output files. Read `references/dab-schema-reference.md` in this skill's directory for the complete YAML schema. Use `assets/templates/databricks.yml.tmpl` and `assets/templates/job-resource.yml.tmpl` as starting skeletons.
 
 #### Output Modes
 

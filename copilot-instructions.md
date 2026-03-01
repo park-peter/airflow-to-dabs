@@ -48,6 +48,8 @@ Use the embedded mapping rules below as authoritative in Copilot (do not rely on
 
 #### Embedded operator mapping (authoritative)
 
+<!-- Snapshot of references/operator-mapping.md — keep in sync on updates -->
+
 **Tier 1 (direct mappings):**
 
 - `PythonOperator` -> `spark_python_task` (extract callable into `src/<task_id>.py`)
