@@ -1,0 +1,39 @@
+# Migrated from Airflow DAG orders_analytics (dbt factory mode).
+#
+# Two jobs are defined:
+#   - orders_analytics_job (YAML, resources/orders_analytics_job.yml): the non-dbt
+#     tasks, with a run_job_task where the cosmos DbtTaskGroup sat.
+#   - orders_analytics_dbt_job (Python, resources/orders_analytics_dbt_job.py):
+#     generated at deploy time from the dbt manifest via the `python.resources`
+#     hook below — one task per dbt model/seed/snapshot/test.
+bundle:
+  name: orders-analytics
+
+include:
+  - resources/*.yml
+
+# PyDABs: the Databricks CLI calls load_resources during bundle validate/deploy
+# to build resources defined in Python. Requires the venv from `make setup`
+# (databricks-bundles + databricks-dbt-factory) and a manifest from `make manifest`.
+python:
+  venv_path: .venv
+  resources:
+    - "resources.orders_analytics_dbt_job:load_resources"
+
+# Generated files that are git-ignored but must still sync to the workspace:
+#   dbt_serverless_env.yaml      base environment the generated job points at
+#   target/partial_parse.msgpack dbt parse cache; tasks inject it to skip parsing
+# Projects that install dbt packages should also include: dbt_packages/**
+sync:
+  include:
+    - dbt_serverless_env.yaml
+    - target/partial_parse.msgpack
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    run_as:
+      service_principal_name: <SERVICE_PRINCIPAL>

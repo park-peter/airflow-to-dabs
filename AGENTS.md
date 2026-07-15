@@ -15,6 +15,7 @@ Produce a deployable bundle: `databricks.yml`, `resources/*.yml` job definitions
 - Extract inline Python callables, SQL strings, and bash commands into standalone source files
 - Convert Jinja template variables to DABs dynamic value references
 - Map `default_args` (retries, timeouts, email notifications) to DABs job/task settings
+- dbt factory mode (default for dbt workloads): convert dbt workloads — including astronomer-cosmos `DbtDag`/`DbtTaskGroup` — into a separate Lakeflow job with one task per dbt model/seed/snapshot/test, generated at deploy time from the dbt manifest via PyDABs and `databricks-dbt-factory`; single `dbt_task` as fallback
 - Handle TaskGroups, SubDAGs, branching operators, Airflow dynamic task mapping, and XCom patterns
 - Hadoop/HDFS migration: detect `spark-submit` in BashOperator/SSHOperator, clean up YARN Spark configs, map HDFS paths, convert HiveQL to Spark SQL, handle Sqoop alternatives
 - Bulk conversion guidance for DAGs with hundreds of Spark tasks
@@ -31,6 +32,7 @@ Read the provided Airflow DAG file(s) and extract:
 4. **Sensors**: Sensor tasks and their trigger conditions
 5. **TaskGroups / SubDAGs**: Grouped tasks and internal structure
 6. **Flags**: Custom operators, XCom usage, Airflow Variables, Airflow Connections, dynamic task mapping (`expand`), and custom timetable/dataset schedules
+7. **dbt workloads**: cosmos imports (`DbtDag`, `DbtTaskGroup`, `ProjectConfig`, `ProfileConfig`, `RenderConfig`), dbt CLI operator families (`airflow_dbt`, `airflow_dbt_python`), dbt Cloud provider operators, and `BashOperator`/`SSHOperator` running `dbt (deps|seed|snapshot|run|test|build)`. Capture project_dir, profiles, target, selectors, vars, and whether the dbt project source / `manifest.json` is available. Cosmos groups appear as one summary row (Tier 2, "decision point — see Phase 2").
 
 Present a summary table before proceeding:
 
@@ -60,6 +62,8 @@ For each task:
    - External task sensors -> `depends_on`, `run_job_task`, or `trigger.table_update`
 4. **Tier 4 (unsupported)**: Flag for manual review. Suggest `notebook_task` as fallback. Add to `MIGRATION_NOTES.md`.
 
+**dbt decision point**: For flagged dbt workloads, default to **dbt factory mode** (read the decision point in `references/operator-mapping.md`; artifacts in the Tier 2 cosmos section). Fall back to single `dbt_task` only on a disqualifier: no dbt source/manifest, unconfirmed selector subsetting, dbt Cloud target, or explicit user opt-out. Surface the choice + toolchain implications (PyDABs, pyproject/.venv, uv, Makefile) before Phase 3.
+
 For schedule conversion (see `references/schedule-trigger-mapping.md`):
 - Convert Airflow 5-field cron to 6-field Quartz cron (prepend `0` for seconds, adjust day-of-week, normalize Sunday `0/7 -> 1`)
 - Convert presets (`@daily`, `@hourly`) to Quartz equivalents
@@ -85,23 +89,27 @@ Use `references/dab-schema-reference.md` for YAML schema. Use `assets/templates/
 
 **Split bundles (opt-in):** Separate bundle per DAG, only when user explicitly requests it.
 
+**dbt factory mode (default for dbt workloads):** Orthogonal to the above. Per dbt-bearing DAG, generate a second Python-defined job (one task per dbt node, built at deploy time from the manifest) and place a `run_job_task` with `job_id: ${resources.jobs.<dag_id>_dbt_job.id}` in the YAML job where the dbt workload sat.
+
 #### File Generation Rules
 
 1. **`databricks.yml`**: Bundle name from user input or directory name. Include `variables` for `spark_version`, `node_type_id`, `warehouse_id`. Define `dev`/`prod` targets. Use `include: - resources/*.yml`.
 2. **`resources/<dag_id>_job.yml`**: One per DAG with schedule/trigger, email_notifications, parameters, job_clusters, tasks with `depends_on`. Cross-DAG `TriggerDagRunOperator` -> `${resources.jobs.<target>.id}`.
 3. **`src/` notebooks**: `# Databricks notebook source` header, `dbutils.widgets` for parameters, extracted callable body, replaced Airflow imports.
 4. **`src/*.sql`**: Extracted SQL with `{{ ds }}` -> `{{job.parameters.run_date}}`, `{{ params.x }}` -> `{{job.parameters.x}}`.
-5. **`MIGRATION_NOTES.md`**: Tier 4 items, XCom patterns, Connections needing secrets, Variables needing parameters, settings without DABs equivalents, cross-DAG dependency map.
+5. **`MIGRATION_NOTES.md`**: Tier 4 items, XCom patterns, Connections needing secrets, Variables needing parameters, settings without DABs equivalents, cross-DAG dependency map. Factory mode: selector semantics, serverless-only note (classic via `job_cluster_key` in `DbtTaskOptions`), task-count warning for very large manifests, profiles values to fill, `make setup && make manifest` prerequisite.
+6. **Factory-mode artifacts** (per dbt-bearing DAG): `resources/<dag_id>_dbt_job.py` from `assets/templates/dbt-factory-resources.py.tmpl`; `resources/__init__.py` (empty); `pyproject.toml`, `Makefile`, `dbt_profiles/profiles.yml` from their `dbt-*` templates; merge `dbt-factory-databricks-additions.yml.tmpl` into `databricks.yml`; copy the dbt project to the bundle root (or point `MANIFEST_PATH` at it); `.gitignore` additions (`.venv/`, `logs/`, `dbt_packages/`, `target/*` with `!target/manifest.json`).
 
 ### Phase 4: Review and Validate
 
 1. **Dependency check**: Every `depends_on` references a valid `task_key`
 2. **Orphan check**: No unreachable tasks
 3. **Task type check**: Each task has exactly one task type field
-4. **Cluster check**: Compute-requiring tasks have `job_cluster_key`, `existing_cluster_id`, or `new_cluster`
+4. **Cluster check**: Compute-requiring tasks have `job_cluster_key`, `existing_cluster_id`, `new_cluster`, or a serverless `environment_key`
 5. **Parameter check**: All `{{job.parameters.*}}` have corresponding entries in `parameters`
 6. **Bundle schema check**: Run `databricks bundle validate -t <target>` and resolve warnings/errors (if auth unavailable, run offline schema checks and report limitation)
-7. **Present summary**: File list, task count, MIGRATION_NOTES items
+7. **Factory-mode validation** (when active): `make setup` -> `make manifest` -> `databricks bundle validate -t dev` (validate executes the PyDABs hook; needs `.venv` + `target/manifest.json`). If `uv`/`dbt` unavailable, skip and report the exact commands. Statically check `python.resources` entries resolve and `run_job_task` references match `JOB_KEY`s.
+8. **Present summary**: File list, task count, MIGRATION_NOTES items
 
 ## Reference Files
 
@@ -110,7 +118,12 @@ Read these progressively as needed during each phase:
 - `references/operator-mapping.md` — Tier 1–4 mapping table with Airflow/DABs YAML examples
 - `references/dab-schema-reference.md` — DABs YAML schema (task types, triggers, clusters, variables)
 - `references/schedule-trigger-mapping.md` — Cron conversion, sensor-to-trigger, default_args, Jinja variables
-- `references/conversion-examples.md` — 4 complete before/after examples
+- `references/conversion-examples.md` — 5 complete before/after examples
 - `references/hadoop-migration-guide.md` — HDFS paths, YARN configs, Hive-to-UC, spark-submit detection, Sqoop alternatives
 - `assets/templates/databricks.yml.tmpl` — Skeleton bundle config
 - `assets/templates/job-resource.yml.tmpl` — Skeleton job resource
+- `assets/templates/dbt-factory-resources.py.tmpl` — PyDABs hook module (factory mode)
+- `assets/templates/dbt-factory-databricks-additions.yml.tmpl` — `python:` block + `sync.include` for databricks.yml (factory mode)
+- `assets/templates/dbt-pyproject.toml.tmpl` — Bundle Python deps (factory mode)
+- `assets/templates/dbt-Makefile.tmpl` — setup/manifest/validate/deploy targets (factory mode)
+- `assets/templates/dbt-profiles.yml.tmpl` — dbt profiles skeleton (factory mode)

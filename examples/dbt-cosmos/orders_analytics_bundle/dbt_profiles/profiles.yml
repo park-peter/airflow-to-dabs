@@ -1,0 +1,26 @@
+# dbt profiles for the migrated orders_analytics project.
+# The generated Databricks job selects the target via `--target ${bundle.target}`,
+# so the dbt target names below (dev / prod) match the bundle targets in databricks.yml.
+#
+# The workspace host and token are injected at run time by the runner notebook
+# (src/run_dbt_command.py) via the DBT_HOST / DBT_ACCESS_TOKEN environment variables.
+# Replace <WAREHOUSE_ID> with the SQL warehouse that should execute the dbt SQL.
+orders_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      method: http
+      catalog: main
+      schema: analytics
+      http_path: /sql/1.0/warehouses/<WAREHOUSE_ID>
+      host: "{{ env_var('DBT_HOST', '') }}"
+      token: "{{ env_var('DBT_ACCESS_TOKEN', '') }}"
+    prod:
+      type: databricks
+      method: http
+      catalog: main
+      schema: analytics
+      http_path: /sql/1.0/warehouses/<WAREHOUSE_ID>
+      host: "{{ env_var('DBT_HOST', '') }}"
+      token: "{{ env_var('DBT_ACCESS_TOKEN', '') }}"

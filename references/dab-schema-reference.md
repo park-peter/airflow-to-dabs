@@ -39,6 +39,38 @@ targets:
 
 ---
 
+## Python-Defined Resources (PyDABs)
+
+Resources can also be defined in Python instead of YAML via a top-level `python:` block in `databricks.yml`. Used by dbt factory mode (see `references/operator-mapping.md`) to generate one task per dbt object at deploy time.
+
+```yaml
+python:
+  venv_path: .venv                                # venv with databricks-bundles installed
+  resources:
+    - "resources.<module_name>:load_resources"    # one module:function entry per generator
+```
+
+The referenced function is called by the Databricks CLI during both `bundle validate` and `bundle deploy`:
+
+```python
+from databricks.bundles.core import Bundle, Resources
+from databricks.bundles.jobs import Job
+
+def load_resources(bundle: Bundle) -> Resources:
+    resources = Resources()
+    resources.add_job("<job_key>", Job.from_dict({...}))   # dict uses Jobs API fields
+    return resources
+```
+
+Rules:
+
+- `python:` coexists with `include: - resources/*.yml`. YAML jobs and Python-registered jobs share one resources namespace, so YAML can reference a Python-registered job (e.g. `job_id: ${resources.jobs.<job_key>.id}` in a `run_job_task`).
+- `load_resources` runs on every `bundle validate` too — any deploy-time file writers inside it must be idempotent.
+- Relative paths (e.g. `notebook_path`) in Python-defined jobs resolve against the bundle root.
+- Requires the venv at `venv_path` to exist with `databricks-bundles` installed before running `validate`/`deploy` (`uv sync --dev` with the generated `pyproject.toml`).
+
+---
+
 ## Job Resource Definition
 
 Defined in `resources/*.yml` files, included by `databricks.yml`.
@@ -267,6 +299,8 @@ Runs dbt commands.
         package: "dbt-databricks>=1.0.0,<2.0.0"
 ```
 
+A single `dbt_task` runs the whole invocation as one opaque task. For one task per dbt model/seed/snapshot/test (per-model observability and retries), use dbt factory mode instead — see the dbt conversion decision point in `references/operator-mapping.md`.
+
 ---
 
 ### run_job_task
@@ -464,6 +498,41 @@ job_clusters:
 ```yaml
 - task_key: my_task
   existing_cluster_id: "1234-567890-abcdef12"
+```
+
+---
+
+### Serverless Environments
+
+Serverless notebook tasks omit all cluster fields (`job_cluster_key`, `new_cluster`, `existing_cluster_id`) and instead reference a job-level environment via `environment_key`. A task with `environment_key` counts as having compute.
+
+```yaml
+resources:
+  jobs:
+    <job-key>:
+      environments:
+        - environment_key: Default
+          spec:
+            # Either a pre-built base-environment file synced with the bundle
+            # (built once; tasks skip per-run pip installs):
+            base_environment: ${workspace.file_path}/dbt_serverless_env.yaml
+            # OR inline dependencies (mutually exclusive with base_environment):
+            # environment_version: "5"
+            # dependencies:
+            #   - dbt-databricks==1.12.2
+      tasks:
+        - task_key: my_task
+          environment_key: Default
+          notebook_task:
+            notebook_path: ../src/my_task.py
+```
+
+The base-environment file itself contains the same spec fields:
+
+```yaml
+environment_version: "5"        # serverless environment version
+dependencies:
+  - dbt-databricks==1.12.2
 ```
 
 ---

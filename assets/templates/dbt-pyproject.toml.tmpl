@@ -1,0 +1,19 @@
+[project]
+name = "<BUNDLE_NAME>"
+version = "0.1.0"
+requires-python = ">=3.10"
+# Used at bundle validate/deploy time by the PyDABs hook in resources/.
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    # PyDABs runtime for the python.resources hook; pair with a compatible Databricks CLI.
+    "databricks-bundles>=1.0.0,<2.0.0",
+    # Generates one Databricks task per dbt node from the manifest.
+    "databricks-dbt-factory==0.2.1",
+    # Single source of truth for the dbt version: used locally by `make manifest`,
+    # and the glue pins the serverless runtime to this exact installed version.
+    "dbt-databricks>=1.8.0,<2.0.0",
+]

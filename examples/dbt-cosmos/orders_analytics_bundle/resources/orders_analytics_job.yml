@@ -1,0 +1,44 @@
+resources:
+  jobs:
+    orders_analytics_job:
+      name: orders-analytics
+      description: >
+        Migrated from Airflow DAG orders_analytics. Ingests raw orders, runs the
+        dbt project as a separate per-model job (see resources/orders_analytics_dbt_job.py),
+        and publishes daily metrics.
+      tags:
+        source: airflow-migration
+        original_dag: orders_analytics
+
+      schedule:
+        quartz_cron_expression: "0 0 0 * * ?"
+        timezone_id: "UTC"
+        pause_status: UNPAUSED
+
+      email_notifications:
+        on_failure:
+          - data-eng-alerts@example.com
+
+      tasks:
+        - task_key: ingest_orders
+          notebook_task:
+            notebook_path: ../src/ingest_orders.py
+          max_retries: 2
+          min_retry_interval_millis: 300000
+
+        # The cosmos DbtTaskGroup maps to a run_job_task that triggers the
+        # Python-generated dbt job (one task per dbt model/seed/test). Per-model
+        # visibility and repair/rerun happen inside that child job.
+        - task_key: dbt_transform
+          depends_on:
+            - task_key: ingest_orders
+          run_job_task:
+            job_id: ${resources.jobs.orders_analytics_dbt_job.id}
+
+        - task_key: publish_metrics
+          depends_on:
+            - task_key: dbt_transform
+          notebook_task:
+            notebook_path: ../src/publish_metrics.py
+          max_retries: 2
+          min_retry_interval_millis: 300000

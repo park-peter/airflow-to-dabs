@@ -1,0 +1,25 @@
+# dbt factory mode: merge these blocks into the generated databricks.yml.
+# Coexists with `include: - resources/*.yml` — YAML jobs and Python-registered
+# jobs share one resources namespace, so the YAML job can reference the
+# generated job via ${resources.jobs.<DAG_ID>_dbt_job.id}.
+#
+# Requires the venv from `make setup` (databricks-bundles + databricks-dbt-factory)
+# and a manifest from `make manifest`. Verified with databricks-bundles 1.0.0-1.6.0
+# on Databricks CLI v1.7.0.
+
+# PyDABs: the Databricks CLI calls each listed function during bundle
+# validate/deploy to build resources defined in Python. Add one entry per
+# dbt-bearing DAG.
+python:
+  venv_path: .venv
+  resources:
+    - "resources.<DAG_ID>_dbt_job:load_resources"
+
+# Generated files that are git-ignored but must still sync to the workspace:
+#   dbt_serverless_env.yaml      base environment the generated job points at
+#   target/partial_parse.msgpack dbt parse cache; tasks inject it to skip parsing
+#   dbt_packages/**              include only when the project installs dbt packages
+sync:
+  include:
+    - dbt_serverless_env.yaml
+    - target/partial_parse.msgpack

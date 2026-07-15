@@ -21,6 +21,7 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 - Converts Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (`file_arrival`, `table_update`)
 - Extracts inline Python, SQL, and bash into standalone source files
 - Converts Jinja template variables (`{{ ds }}`, `{{ params.x }}`) to DABs dynamic value references
+- **dbt factory mode (default for dbt workloads)**: converts dbt workloads — including [astronomer-cosmos](https://github.com/astronomer/astronomer-cosmos) `DbtDag`/`DbtTaskGroup` — into a separate Lakeflow job with one task per dbt model/seed/snapshot/test, generated at deploy time from the dbt manifest via PyDABs and [databricks-dbt-factory](https://github.com/mwojtyczka/databricks-dbt-factory); single `dbt_task` as fallback
 - Generates `MIGRATION_NOTES.md` documenting conversion decisions and manual action items
 - **Hadoop/HDFS migration support**: detects `spark-submit` in BashOperator/SSHOperator, cleans up YARN configs, maps HDFS paths, converts HiveQL, handles Sqoop alternatives
 - Covers Airflow edge patterns including dynamic task mapping (`expand`) and timetable/dataset scheduling notes
@@ -30,11 +31,13 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 | Tier | Description | Examples |
 |------|-------------|----------|
 | **1 — Direct** | 1:1 mapping to a DABs task type | `PythonOperator`, `BashOperator`, `SparkSubmitOperator`, `DatabricksSubmitRunOperator`, `DatabricksRunNowOperator`, `DatabricksNotebookOperator`, `DatabricksSqlOperator`, `DatabricksSQLStatementsOperator`, `DatabricksCopyIntoOperator`, `SQLExecuteQueryOperator`, `DbtOperator`, `TriggerDagRunOperator`, `HiveOperator`, `SSHOperator` |
-| **2 — Semantic** | Requires reasoning about intent | `KubernetesPodOperator`, `DockerOperator`, `BranchPythonOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
+| **2 — Semantic** | Requires reasoning about intent | cosmos `DbtDag`/`DbtTaskGroup`†, `KubernetesPodOperator`, `DockerOperator`, `BranchPythonOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
 | **3 — Sensor** | Converted to job-level triggers | `S3KeySensor`, `DatabricksSqlSensor`, `DatabricksPartitionSensor`, `DatabricksSQLStatementsSensor`, `HdfsSensor`, `FileSensor`, `ExternalTaskSensor`, `SqlSensor`, `TimeSensor` |
-| **4 — Unsupported** | Flagged for manual review | Custom operators, `SqoopOperator`, `PigOperator`, XCom-heavy patterns |
+| **4 — Unsupported** | Flagged for manual review | Custom operators, `DbtCloudRunJobOperator`, `SqoopOperator`, `PigOperator`, XCom-heavy patterns |
 
 \* `DatabricksReposCreateOperator`, `DatabricksReposUpdateOperator`, and `DatabricksReposDeleteOperator` are infrastructure/repo-management operators with no DABs job task equivalent — they are omitted and noted in `MIGRATION_NOTES.md`.
+
+† dbt workloads (cosmos, dbt CLI operators, bash `dbt run`) default to **dbt factory mode** — a separate Python-generated job with one task per dbt object — with a single `dbt_task` as the documented fallback. See the dbt conversion decision point in [`references/operator-mapping.md`](references/operator-mapping.md).
 
 Full mapping details: [`references/operator-mapping.md`](references/operator-mapping.md)
 
@@ -259,6 +262,12 @@ Produces a single bundle with one `databricks.yml` and a separate job resource p
 
 Produces a standalone bundle directory for that one DAG.
 
+### Convert a dbt / cosmos DAG (factory mode)
+
+> "Convert orders_analytics_dag.py to a Databricks Asset Bundle — the dbt project is at ./dbt/orders_analytics"
+
+Produces a two-job bundle: a YAML job for the non-dbt tasks with a `run_job_task` hop, plus a Python-generated dbt job (one task per dbt model/seed/snapshot/test) built at deploy time from the dbt manifest via PyDABs. See [`examples/dbt-cosmos/`](examples/dbt-cosmos/) for a complete conversion.
+
 ## Post-Generation Configuration
 
 The generated bundle uses placeholders for environment-specific values. Replace these before deploying, or provide the values in your prompt to skip this step (e.g., "use warehouse ID abc123 and spark version 15.4.x-scala2.12").
@@ -271,6 +280,9 @@ The generated bundle uses placeholders for environment-specific values. Replace 
 | `<SPARK_VERSION>` | `databricks.yml` → `variables.spark_version` | `15.4.x-scala2.12` |
 | `<NODE_TYPE_ID>` | `databricks.yml` → `variables.node_type_id` | `i3.xlarge` (AWS), `Standard_D4s_v3` (Azure) |
 | `<WAREHOUSE_ID>` | `databricks.yml` → `variables.warehouse_id` | `abc123def456` |
+| `<WAREHOUSE_ID>` (factory mode) | `dbt_profiles/profiles.yml` → `http_path` | `/sql/1.0/warehouses/abc123def456` |
+| `<DBT_PROFILE_NAME>` (factory mode) | `dbt_profiles/profiles.yml` — must match `profile:` in `dbt_project.yml` | `orders_analytics` |
+| `<DEV_CATALOG>` / `<DEV_SCHEMA>` (factory mode) | `dbt_profiles/profiles.yml` → `catalog` / `schema` | `main` / `analytics` |
 
 > **Tip:** If you've already configured auth via `~/.databrickscfg` or `DATABRICKS_HOST`, you can remove `workspace.host` from targets entirely — the CLI picks it up automatically.
 
@@ -279,6 +291,14 @@ The generated bundle uses placeholders for environment-specific values. Replace 
 After filling in placeholders, validate the bundle before deploying:
 
 ```bash
+databricks bundle validate -t dev
+```
+
+For factory-mode bundles, install the venv and generate the dbt manifest first — `bundle validate` executes the PyDABs hook, which needs both:
+
+```bash
+make setup      # uv sync --dev
+make manifest   # dbt deps + dbt parse (no warehouse connection needed)
 databricks bundle validate -t dev
 ```
 
@@ -295,9 +315,9 @@ databricks bundle schema
 | [`references/operator-mapping.md`](references/operator-mapping.md) | Tier 1–4 mapping table with side-by-side Airflow/DABs YAML examples |
 | [`references/dab-schema-reference.md`](references/dab-schema-reference.md) | Condensed DABs YAML schema — all task types, triggers, clusters, variables |
 | [`references/schedule-trigger-mapping.md`](references/schedule-trigger-mapping.md) | Cron conversion, sensor-to-trigger mapping, `default_args` mapping, Jinja variable conversion |
-| [`references/conversion-examples.md`](references/conversion-examples.md) | 4 complete before/after examples (ETL chain, branching, sensor-triggered, multi-system) |
+| [`references/conversion-examples.md`](references/conversion-examples.md) | 5 complete before/after examples (ETL chain, branching, sensor-triggered, multi-system, cosmos dbt factory mode) |
 | [`references/hadoop-migration-guide.md`](references/hadoop-migration-guide.md) | HDFS path conversion, YARN config cleanup, Hive-to-UC mapping, spark-submit detection, Sqoop alternatives, bulk conversion guidance |
-| [`assets/templates/`](assets/templates/) | Skeleton `databricks.yml` and job resource YAML templates |
+| [`assets/templates/`](assets/templates/) | Skeleton `databricks.yml`, job resource, and dbt factory mode templates (PyDABs hook, pyproject, Makefile, profiles) |
 | [`AGENTS.md`](AGENTS.md) | Codex CLI instruction file (same workflow as SKILL.md) |
 
 ## Example Output

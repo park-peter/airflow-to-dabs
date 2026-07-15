@@ -61,3 +61,12 @@ resources:
           #   - task_key: <UPSTREAM_TASK_KEY>
           notebook_task:
             notebook_path: ../src/<TASK_KEY>.py
+
+        # --- dbt factory mode: trigger the Python-generated dbt job ---
+        # Used where a dbt workload (e.g. cosmos DbtTaskGroup) sat in the DAG.
+        # The job key matches JOB_KEY in resources/<DAG_ID>_dbt_job.py.
+        # - task_key: dbt_transform
+        #   depends_on:
+        #     - task_key: <UPSTREAM_TASK_KEY>
+        #   run_job_task:
+        #     job_id: ${resources.jobs.<DAG_ID>_dbt_job.id}

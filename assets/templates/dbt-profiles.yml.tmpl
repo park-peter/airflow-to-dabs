@@ -1,0 +1,27 @@
+# dbt profiles for the migrated project. Save as: dbt_profiles/profiles.yml
+#
+# The profile name must match `profile:` in the dbt project's dbt_project.yml.
+# The generated Databricks job selects the target via `--target ${bundle.target}`,
+# so the dbt target names below (dev / prod) match the bundle targets in databricks.yml.
+#
+# The workspace host and token are injected at run time by the runner notebook
+# (src/run_dbt_command.py) via the DBT_HOST / DBT_ACCESS_TOKEN environment variables.
+<DBT_PROFILE_NAME>:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      method: http
+      catalog: <DEV_CATALOG>
+      schema: <DEV_SCHEMA>
+      http_path: /sql/1.0/warehouses/<WAREHOUSE_ID>
+      host: "{{ env_var('DBT_HOST', '') }}"
+      token: "{{ env_var('DBT_ACCESS_TOKEN', '') }}"
+    prod:
+      type: databricks
+      method: http
+      catalog: <PROD_CATALOG>
+      schema: <PROD_SCHEMA>
+      http_path: /sql/1.0/warehouses/<WAREHOUSE_ID>
+      host: "{{ env_var('DBT_HOST', '') }}"
+      token: "{{ env_var('DBT_ACCESS_TOKEN', '') }}"

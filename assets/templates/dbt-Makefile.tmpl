@@ -1,0 +1,22 @@
+.PHONY: setup manifest validate deploy run
+
+# Install the venv used by the PyDABs hook (databricks.yml -> python.venv_path).
+setup:
+	uv sync --dev
+
+# Regenerate the dbt manifest read by the PyDABs hook in resources/.
+# `dbt parse` does not connect to a warehouse; it only reads the project files.
+# If the dbt project is not at the bundle root, add --project-dir <DBT_PROJECT_DIR>
+# to both commands. For multiple dbt-bearing DAGs, add one parse line per project.
+manifest:
+	uv run dbt deps --profiles-dir dbt_profiles
+	uv run dbt parse --profiles-dir dbt_profiles --target dev
+
+validate: manifest
+	databricks bundle validate -t dev
+
+deploy: manifest
+	databricks bundle deploy -t dev
+
+run:
+	databricks bundle run <JOB_KEY> -t dev

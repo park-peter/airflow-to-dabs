@@ -448,9 +448,28 @@ trigger_downstream = TriggerDagRunOperator(
 
 ---
 
-### DbtOperator / DbtRunOperator / DbtCloudRunJobOperator
+### dbt CLI Operators (DbtOperator / DbtRunOperator / DbtTestOperator / DbtSeedOperator / DbtSnapshotOperator / DbtBuildOperator)
 
-**DABs task type:** `dbt_task`
+**DABs output:** dbt factory mode (default) or a single `dbt_task` (fallback)
+
+#### dbt conversion decision point
+
+**Default to dbt factory mode for every dbt workload.** It converts the dbt project into a separate, Python-generated Lakeflow job with one task per dbt object (model / seed / snapshot / test), giving per-model observability, retry-from-failed-model, parallel execution, and tests gating downstream models — the reasons customers orchestrated dbt with Airflow (and cosmos) in the first place. A single `dbt_task` runs the whole invocation as one opaque box.
+
+Factory mode changes the bundle toolchain: it adds a PyDABs `python:` block, a `pyproject.toml` + `.venv` (`uv`), a `Makefile`, and a `databricks-dbt-factory` dependency, and it requires the dbt project source so `dbt parse` can produce `manifest.json`. Present the choice and these implications in the Phase 1 summary; proceed with factory mode unless a disqualifier applies.
+
+Fall back to a single `dbt_task` only when:
+
+| Disqualifier | Why |
+|---|---|
+| dbt project source / `manifest.json` unavailable to the conversion | Factory mode generates tasks from the manifest; without it there is nothing to explode. |
+| Invocation subsets the project (`--select` / `--exclude` / `--models`, or cosmos `RenderConfig(select=...)`) and the user does not confirm whole-project runs | **Selector caveat:** factory mode explodes the *entire* manifest. A selector-scoped Airflow task ran less than that — converting silently would change semantics. Surface it; convert only on explicit confirmation, and record the decision in `MIGRATION_NOTES.md`. |
+| Target is dbt Cloud (`DbtCloudRunJobOperator`) | dbt Cloud owns orchestration and compute — see Tier 4. |
+| User explicitly requests minimal toolchain change | Their call; note the observability trade-off in `MIGRATION_NOTES.md`. |
+
+For factory mode, generate the artifacts described in **dbt factory mode — generated artifacts** under the cosmos section in Tier 2 (the mechanics are identical for CLI operators; extract `project_dir`, `profiles_dir`, `target`, `vars`, and selectors from the operator arguments instead of cosmos configs).
+
+#### Fallback mapping: single `dbt_task`
 
 Map dbt commands to the `commands` list and map `project_dir` to `project_directory`.
 
@@ -482,6 +501,8 @@ dbt_run = DbtRunOperator(
     - pypi:
         package: "dbt-databricks>=1.0.0,<2.0.0"
 ```
+
+Also treat `BashOperator`/`SSHOperator` commands matching `dbt (deps|seed|snapshot|run|test|build)` as dbt workloads subject to this decision point.
 
 ---
 
@@ -712,6 +733,77 @@ with TaskGroup("data_quality") as quality_group:
   notebook_task:
     notebook_path: ../src/check_schema.py
 ```
+
+---
+
+### Cosmos DbtDag / DbtTaskGroup (astronomer-cosmos)
+
+**DABs output:** dbt factory mode — a separate Python-generated job triggered via `run_job_task`
+
+Cosmos renders one Airflow task per dbt model/seed/test **at runtime** from the dbt manifest, so the individual tasks never appear in the DAG file — a `DbtDag`/`DbtTaskGroup` is statically unparseable task-by-task. Do not attempt to translate its tasks. Instead, swap the generator: `databricks-dbt-factory` reads the same `manifest.json` and renders the same per-model task graph natively as a Lakeflow job.
+
+> Cosmos and databricks-dbt-factory are independent projects with no integration between them — `manifest.json` (a stable dbt-core artifact) is the shared contract. Both are "manifest → orchestrator task graph" generators, which is why migration means swapping the generator rather than translating tasks. Equivalence is at the task-graph level, not feature-for-feature: cosmos-specific settings (per-model retries via `operator_args`, custom profile mappings, `ExecutionMode`) need manual mapping — record them in `MIGRATION_NOTES.md`.
+
+**Airflow:**
+
+```python
+from cosmos import DbtTaskGroup, ProfileConfig, ProjectConfig, RenderConfig
+from cosmos.profiles import DatabricksTokenProfileMapping
+
+dbt_transform = DbtTaskGroup(
+    group_id="dbt_transform",
+    project_config=ProjectConfig("/opt/airflow/dbt/my_project"),
+    profile_config=ProfileConfig(
+        profile_name="my_project",
+        target_name="dev",
+        profile_mapping=DatabricksTokenProfileMapping(
+            conn_id="databricks_default",
+            profile_args={"catalog": "main", "schema": "analytics"},
+        ),
+    ),
+    render_config=RenderConfig(test_behavior=TestBehavior.AFTER_EACH),
+)
+```
+
+**Metadata to extract:**
+
+| Cosmos config | Use |
+|---|---|
+| `ProjectConfig` path / `manifest_path` | Locate the dbt project; colocate it at the bundle root (or point `MANIFEST_PATH` at it). |
+| `ProfileConfig.profile_name` / `target_name` | `dbt_profiles/profiles.yml` profile name and default target. |
+| `profile_mapping` class + `profile_args` (catalog/schema/http_path) | Warehouse hints for `dbt_profiles/profiles.yml`. Runner injects host/token — no Airflow connection needed. |
+| `RenderConfig.select` / `exclude` | **Selector caveat** — see the dbt conversion decision point in Tier 1. |
+| `RenderConfig.test_behavior` | `AFTER_EACH` (default) matches factory behavior: tests as tasks after each model, gating downstream. |
+| `operator_args` (retries, vars, `full_refresh`) | Manual mapping; record in `MIGRATION_NOTES.md`. |
+
+#### dbt factory mode — generated artifacts
+
+Factory mode adds these artifacts to the bundle (templates in `assets/templates/`):
+
+| Artifact | Template | Purpose |
+|---|---|---|
+| `resources/<dag_id>_dbt_job.py` | `dbt-factory-resources.py.tmpl` | PyDABs hook: reads `target/manifest.json`, builds one task per dbt node, writes `dbt_serverless_env.yaml` + `src/run_dbt_command.py` idempotently at validate/deploy time. One module per dbt-bearing DAG. |
+| `resources/__init__.py` | — (empty file) | Makes `resources/` importable as a package. |
+| `databricks.yml` additions | `dbt-factory-databricks-additions.yml.tmpl` | `python:` block (one `resources.<dag_id>_dbt_job:load_resources` entry per dbt-bearing DAG) + `sync.include`. |
+| `pyproject.toml` | `dbt-pyproject.toml.tmpl` | Pins `databricks-bundles`, `databricks-dbt-factory`, `dbt-databricks`. Shared across DAGs. |
+| `Makefile` | `dbt-Makefile.tmpl` | `setup` (uv sync) / `manifest` (dbt deps + parse) / `validate` / `deploy`. One `dbt parse` line per dbt project. |
+| `dbt_profiles/profiles.yml` | `dbt-profiles.yml.tmpl` | dev/prod outputs named after bundle targets; host/token injected by the runner notebook. |
+| dbt project at bundle root | — (copied) | `dbt_project.yml`, `models/`, `seeds/`, etc. Alternative: leave the project elsewhere and set `MANIFEST_PATH` + `--project-dir`. |
+| `.gitignore` additions | — | `.venv/`, `logs/`, `dbt_packages/`, `target/*` with `!target/manifest.json`. |
+
+**Two-job wiring** — the DAG's YAML job triggers the generated job where the cosmos group sat:
+
+```yaml
+- task_key: dbt_transform
+  depends_on:
+    - task_key: <upstream_task>
+  run_job_task:
+    job_id: ${resources.jobs.<dag_id>_dbt_job.id}
+```
+
+Downstream tasks set `depends_on: [{task_key: dbt_transform}]`. The reference resolves because YAML and Python-registered resources share one namespace (see `references/dab-schema-reference.md`, Python-Defined Resources).
+
+See `examples/dbt-cosmos/` for a complete, validated conversion.
 
 ---
 
@@ -1227,6 +1319,7 @@ These operators have no direct DABs equivalent. Flag them in `MIGRATION_NOTES.md
 | `SqoopOperator` (import) | Lakeflow Connect pipeline | Managed RDBMS-to-lakehouse ingestion with CDC. Not a DABs task -- create a pipeline resource. See `hadoop-migration-guide.md`. |
 | `SqoopOperator` (export) | `notebook_task` with JDBC write | `df.write.format("jdbc")` in a notebook. See `hadoop-migration-guide.md`. |
 | `PigOperator` | `notebook_task` or `sql_task` | Rewrite Pig Latin scripts as Spark SQL or PySpark. No Pig runtime on Databricks. |
+| `DbtCloudRunJobOperator` / `DbtCloudJobRunSensor` | `notebook_task` calling the dbt Cloud API, or full migration to dbt factory mode / `dbt_task` | dbt Cloud owns orchestration and compute — factory mode does not apply unless the dbt project itself migrates to Databricks. The notebook fallback needs dbt Cloud `account_id`/`job_id` and an API token in secrets. |
 | `BashOperator` (wrapping `spark-submit`) | `spark_python_task` or `spark_jar_task` | Parse the spark-submit command and convert. See `hadoop-migration-guide.md`. |
 | `SSHOperator` (wrapping `spark-submit`) | `spark_python_task` or `spark_jar_task` | Extract the remote command. SSH hop is eliminated. See `hadoop-migration-guide.md`. |
 | Airflow dynamic task mapping (`expand`, mapped TaskFlow tasks) | `for_each_task` | Convert mapped fan-out to `for_each_task` with a deterministic JSON array input, or flag for manual review if mapping logic is dynamic/non-deterministic at parse time. |
