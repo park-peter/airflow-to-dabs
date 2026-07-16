@@ -21,15 +21,15 @@ mode**: the dbt project is exploded into one Lakeflow task per dbt object via
 ```text
 orders_analytics_bundle/
   databricks.yml                     # include: resources/*.yml + python: (PyDABs) + sync
-  pyproject.toml                     # databricks-bundles, databricks-dbt-factory, dbt-databricks (uv.lock git-ignored)
+  pyproject.toml                     # databricks-bundles, databricks-dbt-factory, exact dbt-databricks + dbt-core (uv.lock git-ignored)
   Makefile                           # setup / manifest / validate / deploy / run
   resources/
     orders_analytics_job.yml         # YAML job: ingest -> run_job_task -> publish
     orders_analytics_dbt_job.py      # PyDABs hook: manifest -> one task per dbt node
   dbt_profiles/profiles.yml          # dev/prod outputs; host/token injected by runner
   dbt_project.yml  models/  seeds/   # the dbt project, colocated at bundle root
-  target/dev/manifest.json           # per-target; checked in so `bundle validate` works without dbt
-  dbt_serverless_env.yaml            # written at deploy time; pins dbt-databricks + dbt-core
+  target/dev/manifest.json           # per-target; git-ignored, produced by `make manifest`
+  dbt_serverless_env.yaml            # git-ignored; written at validate/deploy time; pins dbt-databricks + dbt-core
   src/
     ingest_orders.py                 # extracted from PythonOperator
     publish_metrics.py               # extracted from PythonOperator

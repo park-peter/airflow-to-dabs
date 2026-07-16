@@ -5,5 +5,4 @@ logs/
 dbt_packages/
 .user.yml
 target/**
-!target/dev/
-!target/dev/manifest.json
+dbt_serverless_env.yaml

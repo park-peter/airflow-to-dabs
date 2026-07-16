@@ -151,7 +151,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
 ```
 <bundle>/
   databricks.yml                  # + python: block and sync.include (additions template)
-  pyproject.toml                  # pins databricks-bundles, databricks-dbt-factory, dbt-databricks
+  pyproject.toml                  # pins databricks-bundles, databricks-dbt-factory; exact dbt-databricks + dbt-core
   Makefile                        # setup / manifest / validate / deploy
   resources/
     __init__.py                   # empty package marker
@@ -160,7 +160,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
   dbt_profiles/
     profiles.yml
   dbt_project.yml  models/  seeds/  ...   # the dbt project, colocated at bundle root
-  target/dev/manifest.json        # per-target; produced by `make manifest TARGET=dev`
+  target/dev/manifest.json        # per-target; git-ignored, produced by `make manifest TARGET=dev`
   dbt_vars.json                   # committed static vars ({} when none)
   dbt_serverless_env.yaml         # written at validate/deploy time by the hook
   src/
@@ -211,10 +211,18 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
    - `src/run_dbt_command.py` from `assets/templates/dbt-run-command.py.tmpl` (owned runner: dbt_vars + per-target parse cache)
    - `dbt_vars.json` at the bundle root: the DAG's static vars as a JSON object (`{}` when none) — single source for parse time (Makefile) and run time (runner fallback)
    - `resources/__init__.py` (empty), `pyproject.toml` from `dbt-pyproject.toml.tmpl`, `Makefile` from `dbt-Makefile.tmpl`, `dbt_profiles/profiles.yml` from `dbt-profiles.yml.tmpl` (profile name must match `profile:` in the customer's `dbt_project.yml`)
+   - **Fill the `<DBT_DATABRICKS_VERSION>`/`<DBT_CORE_VERSION>` pins in `pyproject.toml`** — never leave either placeholder unresolved. One rule:
+     - **Preserve every dbt constraint the customer already declares** (exact pins, ranges like `dbt-databricks<1.12`, or either package alone), add only the *missing* dbt package(s) unconstrained, run `uv` resolution, then exact-pin both to the resolved versions. This keeps `uv` inside the customer's declared ranges. (Note `dbt-databricks` depends on `dbt-core`, so an adapter constraint alone can select a compatible core; a core-only constraint cannot select an adapter — declaring both covers either case.)
+     - **Only when the project declares no dbt constraints at all**, use the skill's tested default pair `dbt-databricks==1.12.2` / `dbt-core==1.11.12` (still run `uv` resolution on it).
+     - **Failure handling (all cases), and never auto-change the resolved pins:**
+       - *Unsatisfiable `uv` solve* — a real dependency-metadata conflict; stop and report for manual resolution, preserving the customer's declared constraints.
+       - *Any other `uv` failure* (network, proxy, index auth, download/install) — environmental; surface and stop.
+       - *`make manifest`/`bundle validate` failure* — `uv` only proves dependency-metadata compatibility, not compatibility with the dbt internals the hook imports at generation (e.g. `is_selected_node`), so these are NOT automatically "unrelated." Preserve the pins; fix only clearly version-independent causes (auth, profiles, project parsing, bundle schema) directly; otherwise stop and surface the evidence. Repinning or a `dbt_task` fallback is then an explicit user decision — never automatic. (Automatic `dbt_task` fallback happens only for the enumerated factory disqualifiers in Phase 2, not for unexpected failures here.)
+     - Exact pins give dbt version/runtime parity without a committed lockfile. The hook propagates whatever versions end up installed into the serverless base environment, so the two always match.
    - Copy the customer's dbt project to the bundle root (v1: exactly one dbt project per bundle; multiple projects require split bundles)
    - In the DAG's YAML job, define a `dbt_vars` job parameter (default `"{}"`) and place a `run_job_task` with `job_id: ${resources.jobs.<dag_module>_dbt_job.id}` and `job_parameters: {dbt_vars: "{{job.parameters.dbt_vars}}"}` where the dbt workload sat
    - In factory mode, run the YAML job's companion notebook tasks on serverless too: omit cluster fields (classic `job_clusters` fail at deploy on serverless-only workspaces)
-   - `.gitignore` additions: `.venv/`, `uv.lock`, `logs/`, `dbt_packages/`, `target/**` with `!target/dev/` + `!target/dev/manifest.json`. `uv.lock` is git-ignored so the bundle carries no package-index URLs (internal proxy or otherwise); users resolve fresh with their own index. Commit the hook-written `dbt_serverless_env.yaml` (deterministic from the pins, rewritten idempotently) and the owned runner
+   - `.gitignore` additions: `.venv/`, `uv.lock`, `logs/`, `dbt_packages/`, `target/**`, `dbt_serverless_env.yaml`. Generated artifacts are git-ignored: `target/<target>/manifest.json` is a LOCAL input the hook reads at deploy time (not synced); `dbt_serverless_env.yaml` and `target/*/partial_parse.msgpack` ARE uploaded via `sync.include` despite being git-ignored (`load_resources` writes the env before sync). Committed source: the owned runner (`src/run_dbt_command.py`), `dbt_vars.json`, `pyproject.toml`, and the other templates. `uv.lock` is git-ignored so the bundle carries no package-index URLs; exact `dbt-databricks`/`dbt-core` pins in `pyproject.toml` give dbt version/runtime parity (transitive deps are not locked)
 
 ### Phase 4: Review and Validate
 
@@ -226,7 +234,7 @@ After generating all files:
 4. **Compute check**: Serverless notebook tasks may omit ALL compute fields (an `environment_key` is optional, used to pin dependencies). For classic compute, verify `job_cluster_key`/`existing_cluster_id`/`new_cluster` is present, and that every referenced `job_cluster_key` or `environment_key` is defined on the job
 5. **Parameter check**: Verify all `{{job.parameters.*}}` references have corresponding entries in the job `parameters` list
 6. **Bundle schema check**: Run `databricks bundle validate -t <target>` and fix schema warnings/errors (if auth is unavailable, run `databricks bundle schema` validation checks offline and report the limitation). In factory mode, complete step 7's setup/manifest sequence BEFORE this command -- validate executes the PyDABs hook, which needs the venv and manifest
-7. **Factory-mode validation** (when active): Run `make setup` (creates `.venv` via `uv`), then `make manifest` (`dbt deps` + `dbt parse` — no warehouse connection needed), then `databricks bundle validate -t dev`. Validation executes the PyDABs hook, so it requires the venv and `target/dev/manifest.json` (per-target: `make manifest TARGET=prod` before any prod deploy — never reuse a dev-parsed manifest). A RuntimeError from the hook's fail-closed checks (dbt unit tests present, sanitized task-key collisions, or a generated selector not resolving to exactly its own node, checked with dbt's own imported matcher) means fall back to single `dbt_task` for that workload; over-selection is otherwise prevented by FQN selector rewriting with tests pinned to `--indirect-selection empty`. If `uv` or `dbt` is unavailable, skip and report the exact commands the user must run — same style as the offline-auth caveat in step 6. Also check statically: every `python.resources` entry names an existing `resources/<module>.py` with a `load_resources` function, and each `run_job_task` reference `${resources.jobs.<key>.id}` matches the `JOB_KEY` passed to `resources.add_job`
+7. **Factory-mode validation** (when active): Run `make setup` (creates `.venv` via `uv`), then `make manifest` (`dbt deps` + `dbt parse` — no warehouse connection needed), then `databricks bundle validate -t dev`. Validation executes the PyDABs hook, so it requires the venv and `target/dev/manifest.json` (per-target: `make manifest TARGET=prod` before any prod deploy — never reuse a dev-parsed manifest). A RuntimeError from the hook's fail-closed checks (dbt unit tests present, sanitized task-key collisions, or a generated selector not resolving to exactly its own node, checked with dbt's own imported matcher) means fall back to single `dbt_task` for that workload; over-selection is otherwise prevented by FQN selector rewriting with tests pinned to `--indirect-selection empty`. For any OTHER failure here, preserve the resolved pins, fix only clearly version-independent causes (auth, profiles, project parsing, bundle schema) directly, and otherwise stop and surface the evidence. Do NOT auto-fall-back to `dbt_task` for an unexpected failure — a dbt core/adapter incompatibility that failed `dbt parse` would recur under `dbt_task` anyway; repinning or a `dbt_task` fallback is an explicit user decision. Note the dbt pins were already resolved before this step (see Phase 3), so **skipping is allowed only when `uv`/`dbt` is unavailable at this validation step after pins resolved** — report the exact commands the user must run, same style as the offline-auth caveat in step 6; `uv` being unavailable during pin *resolution* must stop generation, not skip. Also check statically: every `python.resources` entry names an existing `resources/<module>.py` with a `load_resources` function, and each `run_job_task` reference `${resources.jobs.<key>.id}` matches the `JOB_KEY` passed to `resources.add_job`
 8. **Present summary**: Show the user a final summary with file list, task count, and any MIGRATION_NOTES items requiring attention
 
 ## Resources
@@ -242,7 +250,7 @@ Progressive disclosure -- read these references as needed during each phase:
 - `assets/templates/job-resource.yml.tmpl`: Skeleton job resource template
 - `assets/templates/dbt-factory-resources.py.tmpl`: PyDABs hook module for factory mode (one per dbt-bearing DAG)
 - `assets/templates/dbt-factory-databricks-additions.yml.tmpl`: `python:` block + `sync.include` to merge into `databricks.yml` in factory mode
-- `assets/templates/dbt-pyproject.toml.tmpl`: Bundle Python deps for factory mode (databricks-bundles, databricks-dbt-factory, dbt-databricks)
+- `assets/templates/dbt-pyproject.toml.tmpl`: Bundle Python deps for factory mode (databricks-bundles, databricks-dbt-factory, exact dbt-databricks + dbt-core)
 - `assets/templates/dbt-Makefile.tmpl`: setup / manifest / validate / deploy targets for factory mode
 - `assets/templates/dbt-profiles.yml.tmpl`: dbt profiles skeleton (host/token injected by the runner notebook)
 - `assets/templates/dbt-run-command.py.tmpl`: owned runner notebook (0.2.1 base + `dbt_vars` and per-target parse cache)

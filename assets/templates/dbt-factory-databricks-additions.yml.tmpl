@@ -15,16 +15,17 @@ python:
   resources:
     - "resources.<DAG_MODULE>_dbt_job:load_resources"  # <DAG_MODULE> = dag_id sanitized to a Python identifier (sales.daily -> sales_daily)
 
-# Files produced by the PyDABs hook or `make manifest` that must sync to the
-# workspace. sync.include covers them even when git-ignored (partial_parse.msgpack
-# usually is; dbt_serverless_env.yaml may be committed — it is deterministic from
-# the pins and rewritten idempotently):
-#   dbt_serverless_env.yaml            base environment the generated job points at
+# Files that must reach the workspace even though they are git-ignored.
+# sync.include uploads them regardless of .gitignore:
+#   dbt_serverless_env.yaml            base environment the generated job points at;
+#                                      written by the hook at validate/deploy time
 #   target/*/partial_parse.msgpack     per-target dbt parse cache; the runner injects
 #                                      the one matching its dbt_target to skip parsing
 #   dbt_packages/**                    REQUIRED when the project installs dbt packages
-#                                      (it is git-ignored; without this include the
-#                                      synced project is missing package assets)
+#                                      (without this include the synced project is
+#                                      missing package assets)
+# Note: target/*/manifest.json is NOT synced — it is a local input the hook reads
+# at deploy time to build the task graph, not a runtime file.
 sync:
   include:
     - dbt_serverless_env.yaml
