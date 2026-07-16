@@ -34,6 +34,7 @@ orders_analytics_bundle/
     ingest_orders.py                 # extracted from PythonOperator
     publish_metrics.py               # extracted from PythonOperator
     run_dbt_command.py               # owned runner (0.2.1 base + dbt_vars / per-target cache)
+  tests/test_dbt_factory_glue.py     # regression tests for the PyDABs glue
   MIGRATION_NOTES.md
 ```
 
@@ -76,6 +77,7 @@ From `orders_analytics_bundle/`:
 make setup      # uv sync --dev (venv for the PyDABs hook)
 make manifest   # dbt deps + dbt parse (no warehouse connection needed)
 databricks bundle validate -t dev
+make test       # regression tests for the glue (pure-logic tests need no dbt)
 ```
 
 Set real values before deploying (see `MIGRATION_NOTES.md`):

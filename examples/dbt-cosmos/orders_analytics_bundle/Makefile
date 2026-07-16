@@ -3,7 +3,7 @@
 # profile target (e.g. dev catalog/schema) out of another target's deployment.
 TARGET ?= dev
 
-.PHONY: setup manifest validate deploy run
+.PHONY: setup manifest validate deploy run test
 
 # Install the venv used by the PyDABs hook (databricks.yml -> python.venv_path).
 # Uses your default package index; pass a private index if you need one, e.g.
@@ -28,3 +28,8 @@ deploy: manifest
 # generated dbt job through its run_job_task hop.
 run:
 	databricks bundle run orders_analytics_job -t $(TARGET)
+
+# Regression tests for the PyDABs glue. Pure-logic tests need no dbt/warehouse;
+# the end-to-end tests skip unless `make manifest` has produced target/dev/manifest.json.
+test:
+	uv run pytest tests
