@@ -1,0 +1,33 @@
+# dbt factory mode: merge these blocks into the generated databricks.yml.
+# Coexists with `include: - resources/*.yml` — YAML jobs and Python-registered
+# jobs share one resources namespace, so the YAML job can reference the
+# generated job via ${resources.jobs.<DAG_ID>_dbt_job.id}.
+#
+# Requires the venv from `make setup` (databricks-bundles + databricks-dbt-factory)
+# and a manifest from `make manifest`. Verified with databricks-bundles 1.0.0-1.6.0
+# on Databricks CLI v1.7.0.
+
+# PyDABs: the Databricks CLI calls each listed function during bundle
+# validate/deploy to build resources defined in Python. Add one entry per
+# dbt-bearing DAG.
+python:
+  venv_path: .venv
+  resources:
+    - "resources.<DAG_MODULE>_dbt_job:load_resources"  # <DAG_MODULE> = dag_id sanitized to a Python identifier (sales.daily -> sales_daily)
+
+# Files that must reach the workspace even though they are git-ignored.
+# sync.include uploads them regardless of .gitignore:
+#   dbt_serverless_env.yaml            base environment the generated job points at;
+#                                      written by the hook at validate/deploy time
+#   target/*/partial_parse.msgpack     per-target dbt parse cache; the runner injects
+#                                      the one matching its dbt_target to skip parsing
+#   dbt_packages/**                    REQUIRED when the project installs dbt packages
+#                                      (without this include the synced project is
+#                                      missing package assets)
+# Note: target/*/manifest.json is NOT synced — it is a local input the hook reads
+# at deploy time to build the task graph, not a runtime file.
+sync:
+  include:
+    - dbt_serverless_env.yaml
+    - target/*/partial_parse.msgpack
+    - dbt_packages/**    # remove only if the project has NEITHER packages.yml NOR package entries in dependencies.yml; if dbt_project.yml sets packages-install-path, sync that path instead

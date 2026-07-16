@@ -1,0 +1,184 @@
+# Databricks notebook source
+#
+# Based on the run_dbt_command.py shipped in databricks-dbt-factory==0.2.1,
+# extended with:
+#   - dbt_vars: JSON object passed as a job parameter; the SOLE vars channel.
+#     Appended to each dbt command as ["--vars", <json>] argv (never
+#     string-interpolated). Empty/{} falls back to the committed dbt_vars.json
+#     (required; static vars). A differing runtime override also bypasses the
+#     parse-cache injection so manifest-resolved settings (hooks, materializations,
+#     grants) are re-rendered. Commands carrying their own --vars are rejected.
+#   - dbt_target: locates the per-target parse cache at
+#     target/<dbt_target>/partial_parse.msgpack.
+# Re-diff against the packaged runner when bumping the databricks-dbt-factory pin.
+
+import json
+import os
+import shlex
+import shutil
+import tempfile
+
+from dbt.cli.main import dbtRunner
+
+# COMMAND ----------
+
+dbutils.widgets.text("dbt_commands", "")
+dbutils.widgets.text("project_directory", "")
+dbutils.widgets.text("profiles_directory", "")
+dbutils.widgets.text("dbt_vars", "")
+dbutils.widgets.text("dbt_target", "")
+
+dbt_commands = dbutils.widgets.get("dbt_commands")
+project_directory = dbutils.widgets.get("project_directory")
+profiles_directory = dbutils.widgets.get("profiles_directory")
+dbt_vars_raw = dbutils.widgets.get("dbt_vars").strip()
+dbt_target = dbutils.widgets.get("dbt_target").strip()
+
+if not dbt_commands:
+    raise ValueError("dbt_commands parameter is required")
+
+# Runtime vars are appended as separate argv elements below. Vars that change
+# the dbt graph (enabled nodes, dependencies, schemas, aliases) are unsafe here:
+# the task graph was compiled at deploy time.
+# An empty object means "use the project's committed static vars" (dbt_vars.json,
+# resolved after chdir below); a non-empty object REPLACES that whole dict.
+# Parse the sentinel as JSON so "{ }" and other empty-object spellings behave like {}.
+dbt_vars_override = None
+if dbt_vars_raw:
+    _parsed = json.loads(dbt_vars_raw)  # fail fast on malformed JSON
+    if not isinstance(_parsed, dict):
+        raise ValueError("dbt_vars must be a JSON object")
+    if _parsed:
+        dbt_vars_override = _parsed
+
+# COMMAND ----------
+
+ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+os.environ["DBT_ACCESS_TOKEN"] = ctx.apiToken().get()
+os.environ["DBT_HOST"] = ctx.apiUrl().get()
+
+# chdir to the dbt project so dbt runs from inside it. Relative `project_directory` is
+# resolved against this notebook's own workspace location — the same anchor native
+# `dbt_task` uses. Absolute `project_directory` is used as-is.
+if project_directory:
+    notebook_dir = os.path.dirname("/Workspace" + ctx.notebookPath().get())
+    target_dir = (
+        project_directory
+        if os.path.isabs(project_directory)
+        else os.path.normpath(os.path.join(notebook_dir, project_directory))
+    )
+    os.chdir(target_dir)
+
+# Static vars: dbt_vars.json at the project root is the single source of truth,
+# consumed here at run time and by `make manifest` at parse time. It is required
+# (commit {} when the DAG has none) — silently proceeding without it would drop
+# static vars from execution.
+if not os.path.exists("dbt_vars.json"):
+    raise FileNotFoundError(
+        "dbt_vars.json not found at the dbt project root — it is the canonical "
+        "static-vars source; commit it with {} when there are none."
+    )
+with open("dbt_vars.json", encoding="utf-8") as f:
+    static_vars = json.load(f)
+if not isinstance(static_vars, dict):
+    raise ValueError("dbt_vars.json must contain a JSON object")
+
+effective_vars = static_vars if dbt_vars_override is None else dbt_vars_override
+dbt_vars = json.dumps(effective_vars) if effective_vars else ""
+
+# The parse cache was built with the static vars. Injecting it under different
+# runtime vars would freeze manifest-resolved settings (hooks, materializations,
+# grants) at their static values — bypass it and let dbt re-parse instead.
+use_parse_cache = dbt_vars_override is None or dbt_vars_override == static_vars
+
+# dbt writes `logs/dbt.log` and `target/` inside CWD on every run. DAB sync only uploads
+# files, not empty directories — pre-create them (idempotent).
+os.makedirs("logs", exist_ok=True)
+os.makedirs("target", exist_ok=True)
+
+# Every task writes dbt artifacts to a private local dir (DBT_TARGET_PATH/DBT_LOG_PATH)
+# regardless of execution path — parallel factory tasks would otherwise reparse and log
+# into the shared Workspace Files `target/` and `logs/`.
+local_dir = tempfile.mkdtemp(prefix="dbt_local_")
+os.environ["DBT_TARGET_PATH"] = local_dir
+os.environ["DBT_LOG_PATH"] = local_dir
+
+# If a pre-built msgpack for this target sits next to the project, deserialize it into a
+# manifest and inject it into dbtRunner to skip dbt's parse phase on each task. Falls back
+# to a normal parse if the msgpack is absent or unusable. The cache is per-target
+# (target/<dbt_target>/) so a manifest parsed against one profile target never leaks into
+# another target's run.
+manifest = None
+prebuilt_manifest_path = (
+    os.path.join("target", dbt_target, "partial_parse.msgpack")
+    if dbt_target
+    else os.path.join("target", "partial_parse.msgpack")
+)
+if not use_parse_cache:
+    print("[dbt-factory] runtime dbt_vars differ from dbt_vars.json — skipping parse-cache injection; dbt re-parses with the override")
+elif os.path.exists(prebuilt_manifest_path):
+    try:
+        from dbt.contracts.graph.manifest import Manifest
+
+        with open(prebuilt_manifest_path, "rb") as f:
+            manifest = Manifest.from_msgpack(f.read())
+        manifest.build_flat_graph()
+        print(f"[dbt-factory] injecting pre-built manifest from {prebuilt_manifest_path} (skipping dbt parse)")
+    except Exception as e:
+        print(f"[dbt-factory] manifest injection unavailable, falling back to dbt parse: {e}")
+        manifest = None
+
+try:
+    runner = dbtRunner(manifest=manifest)
+
+    for command_str in json.loads(dbt_commands):
+        command_str = command_str.strip()
+        if not command_str:
+            continue
+
+        if command_str.startswith("dbt "):
+            command_str = command_str[4:]
+
+        # shlex.split parses quoted option values (e.g. --warn-error-options
+        # '{...}') the same way a shell would. Selector characters are already
+        # constrained to a safe allowlist at generation time.
+        args = shlex.split(command_str)
+
+        # Vars must flow through the canonical dbt_vars mechanism (dbt_vars.json /
+        # the dbt_vars job parameter), applied at both parse time and here. A
+        # command-level --vars would be overridden by the canonical flag appended
+        # below, or (if canonical is empty) run against a parse cache built with
+        # different vars. dbt accepts `--vars <yaml>` and `--vars=<yaml>` with no
+        # short/env-var form, so the exact token plus the `--vars=` prefix cover
+        # every case.
+        if any(a == "--vars" or a.startswith("--vars=") for a in args):
+            raise ValueError(
+                "A dbt command must not carry its own --vars; set vars via "
+                "dbt_vars.json (static) or the dbt_vars job parameter (runtime) "
+                "so parse-time and run-time stay consistent."
+            )
+
+        if profiles_directory:
+            args.extend(["--profiles-dir", profiles_directory])
+        if dbt_vars:
+            args.extend(["--vars", dbt_vars])
+
+        print(f"Running: dbt {' '.join(args)}")
+        print("-" * 60)
+
+        result = runner.invoke(args)
+
+        if not result.success:
+            detail = result.exception or result.result or "(no further details)"
+            raise RuntimeError(f"dbt command failed: dbt {' '.join(args)}\n{detail}")
+
+        print(f"Completed successfully: dbt {' '.join(args)}")
+finally:
+    os.environ.pop("DBT_ACCESS_TOKEN", None)
+    os.environ.pop("DBT_HOST", None)
+    os.environ.pop("DBT_TARGET_PATH", None)
+    os.environ.pop("DBT_LOG_PATH", None)
+    # Remove the private per-task target/log dir; on reused (all-purpose) clusters these
+    # would otherwise accumulate under the system temp dir for the life of the cluster.
+    if local_dir:
+        shutil.rmtree(local_dir, ignore_errors=True)

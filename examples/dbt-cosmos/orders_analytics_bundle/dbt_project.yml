@@ -1,0 +1,23 @@
+name: "orders_analytics"
+version: "1.0.0"
+config-version: 2
+
+# Must match the profile name in dbt_profiles/profiles.yml.
+profile: "orders_analytics"
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  orders_analytics:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

@@ -1,1 +1,3 @@
 .DS_Store
+.databricks/
+__pycache__/

@@ -1,0 +1,31 @@
+bundle:
+  name: customer-orders-lakeflow
+
+include:
+  - resources/*.yml
+
+variables:
+  warehouse_id:
+    description: SQL warehouse ID used by sql_task data quality checks.
+    default: "<WAREHOUSE_ID>"
+  catalog:
+    description: Unity Catalog catalog for migrated tables.
+    default: main
+  schema:
+    description: Unity Catalog schema for migrated tables.
+    default: commerce
+  landing_path:
+    description: Unity Catalog volume or external location path monitored by the file-arrival trigger.
+    default: /Volumes/main/landing/orders/
+  checkpoint_path:
+    description: Unity Catalog volume path for Auto Loader checkpoint and schema state.
+    default: /Volumes/main/checkpoints/customer_orders/bronze_ingest
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    run_as:
+      service_principal_name: "<SERVICE_PRINCIPAL_NAME>"
