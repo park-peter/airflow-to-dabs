@@ -18,4 +18,6 @@ dev = [
     # not locked). dbt-core is pinned because the selector-exactness check imports it.
     "dbt-databricks==<DBT_DATABRICKS_VERSION>",
     "dbt-core==<DBT_CORE_VERSION>",
+    # Regression tests for the PyDABs glue (tests/).
+    "pytest>=8,<9",
 ]

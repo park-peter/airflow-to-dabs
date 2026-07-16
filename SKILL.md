@@ -210,7 +210,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
    - `resources/<dag_module>_dbt_job.py` from `assets/templates/dbt-factory-resources.py.tmpl` (replace `<DAG_ID>`, `<DAG_MODULE>` = dag_id sanitized to a Python identifier, `<DAG_ID_KEBAB>`, and `<FACTORY_TYPES>` from the detected dbt commands)
    - `src/run_dbt_command.py` from `assets/templates/dbt-run-command.py.tmpl` (owned runner: dbt_vars + per-target parse cache)
    - `dbt_vars.json` at the bundle root: the DAG's static vars as a JSON object (`{}` when none) — single source for parse time (Makefile) and run time (runner fallback)
-   - `resources/__init__.py` (empty), `pyproject.toml` from `dbt-pyproject.toml.tmpl`, `Makefile` from `dbt-Makefile.tmpl`, `dbt_profiles/profiles.yml` from `dbt-profiles.yml.tmpl` (profile name must match `profile:` in the customer's `dbt_project.yml`)
+   - `resources/__init__.py` (empty), `pyproject.toml` from `dbt-pyproject.toml.tmpl`, `Makefile` from `dbt-Makefile.tmpl`, `dbt_profiles/profiles.yml` from `dbt-profiles.yml.tmpl` (profile name must match `profile:` in the customer's `dbt_project.yml`), and `tests/test_dbt_factory_glue.py` from `dbt-tests.py.tmpl` (regression tests for the glue's guards; run `make test`)
    - **Fill the `<DBT_DATABRICKS_VERSION>`/`<DBT_CORE_VERSION>` pins in `pyproject.toml`** — never leave either placeholder unresolved. One rule:
      - **Preserve every dbt constraint the customer already declares** (exact pins, ranges like `dbt-databricks<1.12`, or either package alone), add only the *missing* dbt package(s) unconstrained, run `uv` resolution, then exact-pin both to the resolved versions. This keeps `uv` inside the customer's declared ranges. (Note `dbt-databricks` depends on `dbt-core`, so an adapter constraint alone can select a compatible core; a core-only constraint cannot select an adapter — declaring both covers either case.)
      - **Only when the project declares no dbt constraints at all**, use the skill's tested default pair `dbt-databricks==1.12.2` / `dbt-core==1.11.12` (still run `uv` resolution on it).
@@ -254,6 +254,7 @@ Progressive disclosure -- read these references as needed during each phase:
 - `assets/templates/dbt-Makefile.tmpl`: setup / manifest / validate / deploy targets for factory mode
 - `assets/templates/dbt-profiles.yml.tmpl`: dbt profiles skeleton (host/token injected by the runner notebook)
 - `assets/templates/dbt-run-command.py.tmpl`: owned runner notebook (0.2.1 base + `dbt_vars` and per-target parse cache)
+- `assets/templates/dbt-tests.py.tmpl`: regression tests for the generated glue (selector exactness, `--vars` guard, fail-closed checks, pruning)
 
 ## Examples
 
