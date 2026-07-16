@@ -21,19 +21,19 @@ mode**: the dbt project is exploded into one Lakeflow task per dbt object via
 ```text
 orders_analytics_bundle/
   databricks.yml                     # include: resources/*.yml + python: (PyDABs) + sync
-  pyproject.toml                     # databricks-bundles, databricks-dbt-factory, dbt-databricks
+  pyproject.toml                     # databricks-bundles, databricks-dbt-factory, dbt-databricks (uv.lock git-ignored)
   Makefile                           # setup / manifest / validate / deploy / run
   resources/
     orders_analytics_job.yml         # YAML job: ingest -> run_job_task -> publish
     orders_analytics_dbt_job.py      # PyDABs hook: manifest -> one task per dbt node
   dbt_profiles/profiles.yml          # dev/prod outputs; host/token injected by runner
   dbt_project.yml  models/  seeds/   # the dbt project, colocated at bundle root
-  target/manifest.json               # checked in so `bundle validate` works without dbt
-  dbt_serverless_env.yaml            # written at deploy time; pins dbt-databricks
+  target/dev/manifest.json           # per-target; checked in so `bundle validate` works without dbt
+  dbt_serverless_env.yaml            # written at deploy time; pins dbt-databricks + dbt-core
   src/
     ingest_orders.py                 # extracted from PythonOperator
     publish_metrics.py               # extracted from PythonOperator
-    run_dbt_command.py               # runner notebook, extracted from the pinned package
+    run_dbt_command.py               # owned runner (0.2.1 base + dbt_vars / per-target cache)
   MIGRATION_NOTES.md
 ```
 
@@ -65,7 +65,8 @@ model_stg_orders ──► test_unique_order_id ──────────�
 - The dbt job is not YAML: it's generated at `bundle deploy` time by the PyDABs hook, so
   the task graph tracks the dbt project automatically as models are added.
 - Serverless tasks use a pre-built base environment pinned to the locally tested
-  dbt-databricks version — no per-task pip install.
+  dbt-databricks AND dbt-core versions — no per-task pip install. Pinning dbt-core
+  too keeps the runtime matcher identical to the one the glue checks against.
 
 ## Local QA
 

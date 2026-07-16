@@ -1,8 +1,9 @@
 .venv/
-.databricks/
 uv.lock
+.databricks/
 logs/
 dbt_packages/
 .user.yml
-target/*
-!target/manifest.json
+target/**
+!target/dev/
+!target/dev/manifest.json

@@ -223,6 +223,8 @@ Common `default_args` fields and their DABs equivalents:
 
 Airflow Jinja variables used in operators/SQL need conversion to DABs dynamic value references.
 
+> Dynamic value references belong in PARAMETER values (`base_parameters`, `sql_task.parameters`, task `parameters` lists) — never inline in SQL files. SQL files use `:name` parameter markers whose values are supplied via `sql_task.parameters` (see `references/dab-schema-reference.md`).
+
 | Airflow Jinja | DABs Equivalent | Notes |
 |---|---|---|
 | `{{ ds }}` | `{{job.parameters.run_date}}` | Define `run_date` as job parameter with default `{{job.start_time.iso_date}}` |

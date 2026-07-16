@@ -64,9 +64,15 @@ resources:
 
         # --- dbt factory mode: trigger the Python-generated dbt job ---
         # Used where a dbt workload (e.g. cosmos DbtTaskGroup) sat in the DAG.
-        # The job key matches JOB_KEY in resources/<DAG_ID>_dbt_job.py.
+        # The job key matches JOB_KEY in resources/<DAG_MODULE>_dbt_job.py
+        # (<DAG_MODULE> = dag_id sanitized to a Python identifier).
+        # dbt_vars passes runtime vars through to the child job; define a
+        # dbt_vars job parameter (default "{}") on this job too. Do not set
+        # retries on this hop — a retry re-runs the entire dbt job.
         # - task_key: dbt_transform
         #   depends_on:
         #     - task_key: <UPSTREAM_TASK_KEY>
         #   run_job_task:
-        #     job_id: ${resources.jobs.<DAG_ID>_dbt_job.id}
+        #     job_id: ${resources.jobs.<DAG_MODULE>_dbt_job.id}
+        #     job_parameters:
+        #       dbt_vars: "{{job.parameters.dbt_vars}}"

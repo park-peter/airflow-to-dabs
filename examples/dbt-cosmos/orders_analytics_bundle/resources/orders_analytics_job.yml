@@ -19,6 +19,12 @@ resources:
         on_failure:
           - data-eng-alerts@example.com
 
+      # Runtime dbt vars (JSON object) passed through to the generated dbt job.
+      # Only safe for vars that do not change the dbt graph — see MIGRATION_NOTES.
+      parameters:
+        - name: dbt_vars
+          default: "{}"
+
       tasks:
         - task_key: ingest_orders
           notebook_task:
@@ -34,6 +40,8 @@ resources:
             - task_key: ingest_orders
           run_job_task:
             job_id: ${resources.jobs.orders_analytics_dbt_job.id}
+            job_parameters:
+              dbt_vars: "{{job.parameters.dbt_vars}}"
 
         - task_key: publish_metrics
           depends_on:

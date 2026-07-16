@@ -310,6 +310,8 @@ sql_report = DatabricksSqlOperator(
     file:
       path: ../src/daily_aggregation.sql
       source: WORKSPACE
+    parameters:
+      run_date: "{{job.parameters.run_date}}"
 ```
 
 **Generated `src/daily_aggregation.sql`:**
@@ -318,7 +320,7 @@ sql_report = DatabricksSqlOperator(
 CREATE OR REPLACE TABLE gold.daily_metrics AS
 SELECT date, COUNT(*) as events, SUM(revenue) as total
 FROM silver.transactions
-WHERE date = '{{job.parameters.run_date}}'
+WHERE date = :run_date
 GROUP BY date
 ```
 
@@ -404,6 +406,8 @@ run_report = SQLExecuteQueryOperator(
     file:
       path: ../src/generate_report.sql
       source: WORKSPACE
+    parameters:
+      run_date: "{{job.parameters.run_date}}"
 ```
 
 **Generated `src/generate_report.sql`:**
@@ -412,7 +416,7 @@ run_report = SQLExecuteQueryOperator(
 CREATE OR REPLACE TABLE gold.daily_report AS
 SELECT date, SUM(revenue) as total_revenue
 FROM silver.transactions
-WHERE date = '{{job.parameters.run_date}}'
+WHERE date = :run_date
 GROUP BY date
 ```
 
@@ -458,16 +462,36 @@ trigger_downstream = TriggerDagRunOperator(
 
 Factory mode changes the bundle toolchain: it adds a PyDABs `python:` block, a `pyproject.toml` + `.venv` (`uv`), a `Makefile`, and a `databricks-dbt-factory` dependency, and it requires the dbt project source so `dbt parse` can produce `manifest.json`. Present the choice and these implications in the Phase 1 summary; proceed with factory mode unless a disqualifier applies.
 
-Fall back to a single `dbt_task` only when:
+**Factories from commands.** Enable only the factory types matching the union of dbt commands the original Airflow tasks ran (`FACTORY_TYPES` in the glue template) — a test-only workload must not start running models:
+
+| Detected command | Factories |
+|---|---|
+| `dbt run` | `model` |
+| `dbt seed` | `seed` |
+| `dbt snapshot` | `snapshot` |
+| `dbt test` | `test` |
+| `dbt build` | `model`, `seed`, `snapshot`, `test` |
+| `deps`/`docs` only | not factory-eligible — use the single-`dbt_task` fallback |
+| Multiple commands | union of the above |
+
+The glue post-processes generated tasks: it rewrites every `--select <bare name>` to the node's full FQN (`--select fqn:<pkg>.<path>.<name>`) because dbt bare selectors also match FQN/path components — a node named like a directory (e.g. a test named `staging`) or another resource would otherwise over-select — and pins test commands to `--indirect-selection empty` so a test FQN coinciding with a model FQN cannot pull in attached tests; it prunes `depends_on` references to omitted node types (0.2.1 emits dangling dependencies otherwise); and it fails closed on three silent misbehaviors: dbt unit tests in the manifest with the `test` factory enabled (0.2.1 drops them), sanitized task-key collisions (`model.foo_bar.baz` and `model.foo.bar_baz` both become `model_foo_bar_baz`; PyDABs serialization would silently keep only one), and generated selectors that do not resolve to exactly their own node — the check imports dbt's own `is_selected_node` matcher at deploy time, so it covers everything dbt's semantics cover (prefix matching, leaf shortcuts, versioned models, wildcard slurp, package-stripped retry) and also rejects a selector resolving to a single wrong node, or one whose FQN — package, any directory component, or name — contains anything outside `[A-Za-z0-9_.-]` (an allowlist checked over the full FQN, not just the leaf; hyphens are allowed since dbt path components use them; other characters would be reinterpreted by dbt's CLI selector grammar or corrupt the runner's `shlex.split`). The runner also rejects any dbt command carrying its own `--vars` (both `--vars <yaml>` and `--vars=<yaml>`) — vars must use the canonical `dbt_vars.json`/`dbt_vars` channel. Bundled-test mode (`bundle_tests=True`) is not supported — its selectors cannot be rewritten to exact form.
+
+**Vars.** Static `vars` (literal dicts) live in ONE committed file: `dbt_vars.json` at the bundle root (required; `{}` when none). `make manifest` feeds it to `dbt parse --vars` and the runner falls back to it at run time whenever the `dbt_vars` job parameter is an empty object — so parse-time and run-time always agree, and no JSON is ever inlined into shell or Python quoting. A runtime override that differs from the file also bypasses the parse-cache injection (the cache was compiled with static vars — hooks, materializations, and grants would silently keep static values); dbt re-parses in-task instead, at some startup cost. A non-empty runtime `dbt_vars` REPLACES the whole dict (dbt does not merge repeated `--vars`), so overriding callers must pass the complete set. Never smuggle vars through `EXTRA_DBT_COMMAND_OPTIONS` (two `--vars` flags: dbt silently uses the last one). Runtime overrides are safe only when they do not change the dbt graph (enabled nodes, dependencies, schemas, aliases), because the task graph was compiled at deploy time. Disqualifiers: a var that changes the graph, or dbt operator tasks passing conflicting vars dicts (no single canonical value exists) — fall back to `dbt_task`.
+
+Fall back to a single `dbt_task` when:
 
 | Disqualifier | Why |
 |---|---|
-| dbt project source / `manifest.json` unavailable to the conversion | Factory mode generates tasks from the manifest; without it there is nothing to explode. |
+| dbt project **source** unavailable to the conversion | Runtime dbt needs the full project files synced (models, `dbt_project.yml`, profiles, packages) — a manifest alone is NOT enough. Conversely, source without a manifest is fine: `make manifest` generates one. |
 | Invocation subsets the project (`--select` / `--exclude` / `--models`, or cosmos `RenderConfig(select=...)`) and the user does not confirm whole-project runs | **Selector caveat:** factory mode explodes the *entire* manifest. A selector-scoped Airflow task ran less than that — converting silently would change semantics. Surface it; convert only on explicit confirmation, and record the decision in `MIGRATION_NOTES.md`. |
-| Target is dbt Cloud (`DbtCloudRunJobOperator`) | dbt Cloud owns orchestration and compute — see Tier 4. |
+| `full_refresh=True` detected and not manually resolved | Never apply `--full-refresh` automatically (it is invalid for `dbt test` and changes materialization behavior). Make it an explicit manual-review decision. |
+| Vars that change the dbt graph, without confirmation that the graph is invariant | See Vars above. |
+| More than one dbt project in the bundle | v1 supports exactly one dbt project per bundle, colocated at the bundle root. Multiple projects require split bundles. |
 | User explicitly requests minimal toolchain change | Their call; note the observability trade-off in `MIGRATION_NOTES.md`. |
 
-For factory mode, generate the artifacts described in **dbt factory mode — generated artifacts** under the cosmos section in Tier 2 (the mechanics are identical for CLI operators; extract `project_dir`, `profiles_dir`, `target`, `vars`, and selectors from the operator arguments instead of cosmos configs).
+**dbt Cloud (`DbtCloudRunJobOperator`) is NOT a `dbt_task` fallback** — `dbt_task` runs dbt Core and cannot trigger a dbt Cloud job. Route it to Tier 4 (notebook calling the dbt Cloud API, or migrate the project to Databricks).
+
+For factory mode, generate the artifacts described in **dbt factory mode — generated artifacts** under the cosmos section in Tier 2 (the mechanics are identical for CLI operators; extract `project_dir`, `profiles_dir`, `target`, `vars`, and selectors from the operator arguments instead of cosmos configs). Multiple dbt operator tasks over the same project (e.g. `dbt_seed >> dbt_run >> dbt_test`) collapse into ONE factory job with ONE `run_job_task` hop — the manifest explosion already covers seeds, models, snapshots, and tests, with ordering derived from the dbt DAG instead of the coarse seed→run→test chain. Note the semantic shift in `MIGRATION_NOTES.md`: tests run after each model and gate downstream nodes, instead of one test phase at the end.
 
 #### Fallback mapping: single `dbt_task`
 
@@ -550,7 +574,7 @@ hive_etl = HiveOperator(
 INSERT INTO catalog.analytics.daily_summary
 SELECT date, COUNT(*) as total, SUM(amount) as revenue
 FROM catalog.events.transactions
-WHERE date = '{{job.parameters.run_date}}'
+WHERE date = :run_date
 GROUP BY date
 ```
 
@@ -782,14 +806,16 @@ Factory mode adds these artifacts to the bundle (templates in `assets/templates/
 
 | Artifact | Template | Purpose |
 |---|---|---|
-| `resources/<dag_id>_dbt_job.py` | `dbt-factory-resources.py.tmpl` | PyDABs hook: reads `target/manifest.json`, builds one task per dbt node, writes `dbt_serverless_env.yaml` + `src/run_dbt_command.py` idempotently at validate/deploy time. One module per dbt-bearing DAG. |
+| `resources/<dag_module>_dbt_job.py` | `dbt-factory-resources.py.tmpl` | PyDABs hook: reads `target/<target>/manifest.json`, enables factories per `FACTORY_TYPES`, prunes dangling deps, runs fail-closed checks, builds one task per dbt node, defines `dbt_vars`/`dbt_target` job parameters, writes `dbt_serverless_env.yaml` idempotently (pinning the venv's exact dbt-databricks and dbt-core — the exactness check imports the local dbt-core, so runtime must match). One module per dbt-bearing DAG. `<dag_module>` = dag_id sanitized to a Python identifier (non `[a-zA-Z0-9_]` chars -> `_`, e.g. `sales.daily` -> `sales_daily`) — raw dotted dag_ids break the module import. |
 | `resources/__init__.py` | — (empty file) | Makes `resources/` importable as a package. |
 | `databricks.yml` additions | `dbt-factory-databricks-additions.yml.tmpl` | `python:` block (one `resources.<dag_id>_dbt_job:load_resources` entry per dbt-bearing DAG) + `sync.include`. |
 | `pyproject.toml` | `dbt-pyproject.toml.tmpl` | Pins `databricks-bundles`, `databricks-dbt-factory`, `dbt-databricks`. Shared across DAGs. |
-| `Makefile` | `dbt-Makefile.tmpl` | `setup` (uv sync) / `manifest` (dbt deps + parse) / `validate` / `deploy`. One `dbt parse` line per dbt project. |
+| `Makefile` | `dbt-Makefile.tmpl` | `TARGET ?= dev`; `setup` (uv sync) / `manifest` (dbt deps + parse `--target $(TARGET)` `--target-path target/$(TARGET)`) / `validate` / `deploy`. Per-target manifest paths keep dev-parsed artifacts (profile-resolved catalog/schema are baked into the manifest at parse time) out of prod deployments. |
 | `dbt_profiles/profiles.yml` | `dbt-profiles.yml.tmpl` | dev/prod outputs named after bundle targets; host/token injected by the runner notebook. |
-| dbt project at bundle root | — (copied) | `dbt_project.yml`, `models/`, `seeds/`, etc. Alternative: leave the project elsewhere and set `MANIFEST_PATH` + `--project-dir`. |
-| `.gitignore` additions | — | `.venv/`, `logs/`, `dbt_packages/`, `target/*` with `!target/manifest.json`. |
+| `src/run_dbt_command.py` | `dbt-run-command.py.tmpl` | Runner notebook owned by the bundle: the 0.2.1 packaged runner extended with `dbt_vars` (appended as `--vars` argv, never string-interpolated; empty/`{}` falls back to `dbt_vars.json`) and per-target parse-cache lookup. Re-diff against the packaged runner when bumping the pin. |
+| `dbt_vars.json` | — (write `{}` or the DAG's static vars) | Single source of static dbt vars, committed at the bundle root; consumed by `make manifest` (parse time) and the runner (run time). REQUIRED — the runner fails if it is missing. |
+| dbt project at bundle root | — (copied) | `dbt_project.yml`, `models/`, `seeds/`, etc. **v1 constraint: exactly one dbt project per bundle, colocated at the bundle root.** Multiple dbt projects → split bundles. |
+| `.gitignore` additions | — | `.venv/`, `logs/`, `dbt_packages/`, `uv.lock`, `target/**` with `!target/dev/` + `!target/dev/manifest.json`. `uv.lock` is git-ignored so no package-index URL is committed. |
 
 **Two-job wiring** — the DAG's YAML job triggers the generated job where the cosmos group sat:
 
@@ -798,10 +824,19 @@ Factory mode adds these artifacts to the bundle (templates in `assets/templates/
   depends_on:
     - task_key: <upstream_task>
   run_job_task:
-    job_id: ${resources.jobs.<dag_id>_dbt_job.id}
+    job_id: ${resources.jobs.<dag_module>_dbt_job.id}
+    job_parameters:
+      dbt_vars: "{{job.parameters.dbt_vars}}"
 ```
 
+The parent job defines a `dbt_vars` parameter (default `"{}"`); the child job's own `dbt_vars` parameter reaches every runner task as a widget and is appended to each dbt command as `--vars` argv.
+
 Downstream tasks set `depends_on: [{task_key: dbt_transform}]`. The reference resolves because YAML and Python-registered resources share one namespace (see `references/dab-schema-reference.md`, Python-Defined Resources).
+
+Two rules for the YAML job in factory mode:
+
+- **Serverless companion tasks:** run the YAML job's own notebook tasks on serverless too — omit all cluster fields (classic `job_clusters` validate but fail at deploy on serverless-only workspaces, and the generated dbt job is serverless-only).
+- **Retries:** map Airflow retries onto the YAML job's own tasks only. Never set retries on the `run_job_task` hop — a retry there re-runs the entire dbt job. Per-model reruns use Lakeflow repair on the child job.
 
 See `examples/dbt-cosmos/` for a complete, validated conversion.
 

@@ -504,7 +504,7 @@ job_clusters:
 
 ### Serverless Environments
 
-Serverless notebook tasks omit all cluster fields (`job_cluster_key`, `new_cluster`, `existing_cluster_id`) and instead reference a job-level environment via `environment_key`. A task with `environment_key` counts as having compute.
+Serverless notebook tasks omit all cluster fields (`job_cluster_key`, `new_cluster`, `existing_cluster_id`). Referencing a job-level environment via `environment_key` is OPTIONAL — use it to pin dependencies; without it the task runs on the default serverless environment.
 
 ```yaml
 resources:
@@ -520,6 +520,7 @@ resources:
             # environment_version: "5"
             # dependencies:
             #   - dbt-databricks==1.12.2
+            #   - dbt-core==1.11.12    # pin dbt-core too (see note below)
       tasks:
         - task_key: my_task
           environment_key: Default
@@ -533,7 +534,10 @@ The base-environment file itself contains the same spec fields:
 environment_version: "5"        # serverless environment version
 dependencies:
   - dbt-databricks==1.12.2
+  - dbt-core==1.11.12           # pin dbt-core too, not just the adapter
 ```
+
+For dbt factory mode, pin **both** `dbt-databricks` and `dbt-core` to the exact versions in the bundle venv. `dbt-databricks` alone allows a `dbt-core` range, but the factory glue imports the local `dbt-core` for its selector-exactness check — the runtime environment must resolve the identical `dbt-core` for that guarantee to hold.
 
 ---
 

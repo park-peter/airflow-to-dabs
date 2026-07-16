@@ -13,13 +13,20 @@
 python:
   venv_path: .venv
   resources:
-    - "resources.<DAG_ID>_dbt_job:load_resources"
+    - "resources.<DAG_MODULE>_dbt_job:load_resources"  # <DAG_MODULE> = dag_id sanitized to a Python identifier (sales.daily -> sales_daily)
 
-# Generated files that are git-ignored but must still sync to the workspace:
-#   dbt_serverless_env.yaml      base environment the generated job points at
-#   target/partial_parse.msgpack dbt parse cache; tasks inject it to skip parsing
-#   dbt_packages/**              include only when the project installs dbt packages
+# Files produced by the PyDABs hook or `make manifest` that must sync to the
+# workspace. sync.include covers them even when git-ignored (partial_parse.msgpack
+# usually is; dbt_serverless_env.yaml may be committed — it is deterministic from
+# the pins and rewritten idempotently):
+#   dbt_serverless_env.yaml            base environment the generated job points at
+#   target/*/partial_parse.msgpack     per-target dbt parse cache; the runner injects
+#                                      the one matching its dbt_target to skip parsing
+#   dbt_packages/**                    REQUIRED when the project installs dbt packages
+#                                      (it is git-ignored; without this include the
+#                                      synced project is missing package assets)
 sync:
   include:
     - dbt_serverless_env.yaml
-    - target/partial_parse.msgpack
+    - target/*/partial_parse.msgpack
+    - dbt_packages/**    # remove only if the project has NEITHER packages.yml NOR package entries in dependencies.yml; if dbt_project.yml sets packages-install-path, sync that path instead

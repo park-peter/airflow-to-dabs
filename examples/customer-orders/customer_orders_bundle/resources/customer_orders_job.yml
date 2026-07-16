@@ -74,6 +74,13 @@ resources:
             file:
               path: ../src/dq_order_totals.sql
               source: WORKSPACE
+            # Dynamic value references cannot be used inline in SQL files; the
+            # file uses :named parameter markers and values are passed here.
+            parameters:
+              run_date: "{{job.parameters.run_date}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              min_daily_orders: "{{job.parameters.min_daily_orders}}"
 
         - task_key: choose_validation
           depends_on:

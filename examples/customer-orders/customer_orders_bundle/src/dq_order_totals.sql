@@ -1,7 +1,7 @@
 SELECT
   CASE
-    WHEN COUNT(*) >= CAST('{{job.parameters.min_daily_orders}}' AS BIGINT) THEN 1
+    WHEN COUNT(*) >= CAST(:min_daily_orders AS BIGINT) THEN 1
     ELSE RAISE_ERROR('Daily order volume below threshold')
   END AS passed
-FROM {{job.parameters.catalog}}.{{job.parameters.schema}}.silver_orders
-WHERE order_date = DATE '{{job.parameters.run_date}}';
+FROM IDENTIFIER(:catalog || '.' || :schema || '.silver_orders')
+WHERE order_date = CAST(:run_date AS DATE);

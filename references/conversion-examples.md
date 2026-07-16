@@ -720,17 +720,22 @@ Two jobs: the YAML job carries the non-dbt tasks with a `run_job_task` where the
 python:
   venv_path: .venv
   resources:
-    - "resources.orders_analytics_dbt_job:load_resources"
+    - "resources.orders_analytics_dbt_job:load_resources"   # module name = sanitized dag_id
 
 sync:
   include:
     - dbt_serverless_env.yaml
-    - target/partial_parse.msgpack
+    - target/*/partial_parse.msgpack   # per-target parse cache
+    - dbt_packages/**                  # when the project installs dbt packages
 ```
 
 **`resources/orders_analytics_job.yml` (tasks):**
 
 ```yaml
+parameters:
+  - name: dbt_vars        # runtime override (graph-invariant only); {} = use committed dbt_vars.json
+    default: "{}"
+
 tasks:
   - task_key: ingest_orders
     notebook_task:
@@ -743,6 +748,8 @@ tasks:
       - task_key: ingest_orders
     run_job_task:
       job_id: ${resources.jobs.orders_analytics_dbt_job.id}
+      job_parameters:
+        dbt_vars: "{{job.parameters.dbt_vars}}"
 
   - task_key: publish_metrics
     depends_on:
@@ -767,30 +774,36 @@ from databricks_dbt_factory.TaskFactory import (
 )
 
 JOB_KEY = "orders_analytics_dbt_job"
+FACTORY_TYPES = ["model", "snapshot", "seed", "test"]  # union of detected dbt commands
 
 def _build_tasks(target: str) -> list[dict]:
     resolver = DbtDependencyResolver()
     options = DbtTaskOptions(
         environment_key="Default",
         task_type=TaskType.NOTEBOOK,
-        notebook_path="src/run_dbt_command.py",
+        notebook_path="src/run_dbt_command.py",   # owned runner (dbt_vars + per-target cache)
         project_directory="..",
         profiles_directory="dbt_profiles",
     )
-    factories = {
-        "model": ModelTaskFactory(resolver, options, f"--target {target}"),
-        "snapshot": SnapshotTaskFactory(resolver, options, f"--target {target}"),
-        "seed": SeedTaskFactory(resolver, options, f"--target {target}"),
-        "test": TestTaskFactory(resolver, options, f"--target {target}"),
-    }
+    classes = {"model": ModelTaskFactory, "snapshot": SnapshotTaskFactory,
+               "seed": SeedTaskFactory, "test": TestTaskFactory}
+    factories = {t: classes[t](resolver, options, f"--target {target}") for t in FACTORY_TYPES}
     factory = DbtFactory(SpecsHandler(), factories, bundle_tests=False)
-    manifest = SpecsHandler.read_dbt_manifest("target/manifest.json")
-    return factory.create_tasks(manifest)
+    manifest = SpecsHandler.read_dbt_manifest(f"target/{target}/manifest.json")  # per-target
+    _fail_closed_checks(manifest)              # unit tests -> error (0.2.1 drops them)
+    _assert_exact_selectors(manifest)          # each selector must resolve to its own node (dbt's matcher)
+    tasks = factory.create_tasks(manifest)
+    _assert_unique_task_keys(tasks)            # sanitized-key collisions -> error
+    return _prune_dangling_deps(_qualify_selectors(tasks, manifest))  # fqn: + tests --indirect-selection empty
 
 def load_resources(bundle: Bundle) -> Resources:
     resources = Resources()
     resources.add_job(JOB_KEY, Job.from_dict({
         "name": "orders-analytics-dbt",
+        "parameters": [
+            {"name": "dbt_vars", "default": "{}"},        # {} = fall back to dbt_vars.json
+            {"name": "dbt_target", "default": bundle.target},
+        ],
         "tasks": _build_tasks(bundle.target),
         "environments": [{
             "environment_key": "Default",
@@ -807,4 +820,6 @@ For a 5-node dbt project (1 seed, 3 models, 2 tests) this generates a 6-task job
 - No `RenderConfig(select=...)` in the source, so whole-project semantics are unchanged. With selectors present, confirm before converting (factory explodes the entire manifest) or fall back to a single `dbt_task`.
 - `DatabricksTokenProfileMapping` replaced by `dbt_profiles/profiles.yml` with host/token injected by the runner notebook at run time — no Airflow connection.
 - `default_args.retries` applied to YAML-job notebook tasks; per-model reruns in the dbt job use Lakeflow repair.
-- Deploy prerequisite: `make setup && make manifest` (venv + `dbt parse`) before `databricks bundle validate`/`deploy`.
+- Generated selectors are rewritten to full FQNs (`--select fqn:...`) and validated exact against dbt's own matcher; the hook fails closed on unit tests, task-key collisions, non-exact selectors, and any full-FQN component outside `[A-Za-z0-9_.-]`. Vars go only through `dbt_vars.json` / the `dbt_vars` parameter — a command-level `--vars` (either spelling) is rejected by both the glue and the runner.
+- `dbt_serverless_env.yaml` pins the installed `dbt-databricks` and `dbt-core` exactly (dbt-core parity keeps the runtime matcher identical to the one the glue checks against).
+- Deploy prerequisite: `make setup && make manifest` (venv + `dbt parse` into `target/dev/`) before `databricks bundle validate`/`deploy`; for prod, `make deploy TARGET=prod` — manifests are per-target because parse bakes in profile-resolved catalog/schema.

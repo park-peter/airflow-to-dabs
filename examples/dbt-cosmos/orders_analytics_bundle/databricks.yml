@@ -20,14 +20,15 @@ python:
   resources:
     - "resources.orders_analytics_dbt_job:load_resources"
 
-# Generated files that are git-ignored but must still sync to the workspace:
-#   dbt_serverless_env.yaml      base environment the generated job points at
-#   target/partial_parse.msgpack dbt parse cache; tasks inject it to skip parsing
-# Projects that install dbt packages should also include: dbt_packages/**
+# Generated files that must sync to the workspace even when git-ignored:
+#   dbt_serverless_env.yaml          base environment the generated job points at
+#   target/*/partial_parse.msgpack   per-target dbt parse cache; the runner injects
+#                                    the one matching its dbt_target to skip parsing
+# Projects that install dbt packages must also include: dbt_packages/**
 sync:
   include:
     - dbt_serverless_env.yaml
-    - target/partial_parse.msgpack
+    - target/*/partial_parse.msgpack
 
 targets:
   dev:
