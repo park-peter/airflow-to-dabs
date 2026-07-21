@@ -24,14 +24,15 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 - **dbt factory mode (default for dbt workloads)**: converts dbt workloads — including [astronomer-cosmos](https://github.com/astronomer/astronomer-cosmos) `DbtDag`/`DbtTaskGroup` — into a separate Lakeflow job with one task per dbt model/seed/snapshot/test, generated at deploy time from the dbt manifest via PyDABs and [databricks-dbt-factory](https://github.com/mwojtyczka/databricks-dbt-factory); single `dbt_task` as fallback
 - Generates `MIGRATION_NOTES.md` documenting conversion decisions and manual action items
 - **Hadoop/HDFS migration support**: detects `spark-submit` in BashOperator/SSHOperator, cleans up YARN configs, maps HDFS paths, converts HiveQL, handles Sqoop alternatives
-- Covers Airflow edge patterns including dynamic task mapping (`expand`) and timetable/dataset scheduling notes
+- Covers Airflow edge patterns including TaskFlow dataflow, dynamic task mapping (`.expand()`) and mapped task groups (`@task_group.expand()` → `for_each_task` + child job), and timetable/dataset scheduling notes
+- **Airflow 3 support**: recognizes the `airflow.sdk` Task SDK and `apache-airflow-providers-standard` import paths, and maps `Asset`-based scheduling (see [`references/airflow3-migration.md`](references/airflow3-migration.md))
 
 ## Operator Coverage
 
 | Tier | Description | Examples |
 |------|-------------|----------|
 | **1 — Direct** | 1:1 mapping to a DABs task type | `PythonOperator`, `BashOperator`, `SparkSubmitOperator`, `DatabricksSubmitRunOperator`, `DatabricksRunNowOperator`, `DatabricksNotebookOperator`, `DatabricksSqlOperator`, `DatabricksSQLStatementsOperator`, `DatabricksCopyIntoOperator`, `SQLExecuteQueryOperator`, `DbtOperator`, `TriggerDagRunOperator`, `HiveOperator`, `SSHOperator` |
-| **2 — Semantic** | Requires reasoning about intent | cosmos `DbtDag`/`DbtTaskGroup`†, `KubernetesPodOperator`, `DockerOperator`, `BranchPythonOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
+| **2 — Semantic** | Requires reasoning about intent | cosmos `DbtDag`/`DbtTaskGroup`†, dynamic task mapping (`.expand()`), mapped task groups (`@task_group.expand()`), `KubernetesPodOperator`, `DockerOperator`, `BranchPythonOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
 | **3 — Sensor** | Converted to job-level triggers | `S3KeySensor`, `DatabricksSqlSensor`, `DatabricksPartitionSensor`, `DatabricksSQLStatementsSensor`, `HdfsSensor`, `FileSensor`, `ExternalTaskSensor`, `SqlSensor`, `TimeSensor` |
 | **4 — Unsupported** | Flagged for manual review | Custom operators, `DbtCloudRunJobOperator`, `SqoopOperator`, `PigOperator`, XCom-heavy patterns |
 
@@ -268,6 +269,12 @@ Produces a standalone bundle directory for that one DAG.
 
 Produces a two-job bundle: a YAML job for the non-dbt tasks with a `run_job_task` hop, plus a Python-generated dbt job (one task per dbt model/seed/snapshot/test) built at deploy time from the dbt manifest via PyDABs. See [`examples/dbt-cosmos/`](examples/dbt-cosmos/) for a complete conversion.
 
+### Convert an Airflow 3 DAG with dynamic mapping / mapped task groups
+
+> "Convert regional_ingest_dag.py to a Databricks Asset Bundle"
+
+Recognizes the `airflow.sdk` and `apache-airflow-providers-standard` imports, maps `.expand()` to a `for_each_task`, and turns a mapped task group (`@task_group.expand()`) into a `for_each_task` → `run_job_task` → child job holding the subgraph. See [`examples/dynamic-mapping/`](examples/dynamic-mapping/) for a complete conversion.
+
 ## Post-Generation Configuration
 
 The generated bundle uses placeholders for environment-specific values. Replace these before deploying, or provide the values in your prompt to skip this step (e.g., "use warehouse ID abc123 and spark version 15.4.x-scala2.12").
@@ -314,8 +321,9 @@ databricks bundle schema
 |------|-------------|
 | [`references/operator-mapping.md`](references/operator-mapping.md) | Tier 1–4 mapping table with side-by-side Airflow/DABs YAML examples |
 | [`references/dab-schema-reference.md`](references/dab-schema-reference.md) | Condensed DABs YAML schema — all task types, triggers, clusters, variables |
-| [`references/schedule-trigger-mapping.md`](references/schedule-trigger-mapping.md) | Cron conversion, sensor-to-trigger mapping, `default_args` mapping, Jinja variable conversion |
-| [`references/conversion-examples.md`](references/conversion-examples.md) | 5 complete before/after examples (ETL chain, branching, sensor-triggered, multi-system, cosmos dbt factory mode) |
+| [`references/schedule-trigger-mapping.md`](references/schedule-trigger-mapping.md) | Cron conversion, sensor-to-trigger mapping, Airflow 3 Asset/`AssetOrTimeSchedule` scheduling, `default_args` mapping, Jinja variable conversion |
+| [`references/conversion-examples.md`](references/conversion-examples.md) | 6 complete before/after examples (ETL chain, branching, sensor-triggered, multi-system, cosmos dbt factory mode, Airflow 3 dynamic mapping + mapped task group) |
+| [`references/airflow3-migration.md`](references/airflow3-migration.md) | Airflow 3 recognition — `airflow.sdk` + `apache-airflow-providers-standard` imports, Assets vs Datasets, asset scheduling, removed operators, recognize→safe-map→flag checklist |
 | [`references/hadoop-migration-guide.md`](references/hadoop-migration-guide.md) | HDFS path conversion, YARN config cleanup, Hive-to-UC mapping, spark-submit detection, Sqoop alternatives, bulk conversion guidance |
 | [`assets/templates/`](assets/templates/) | Skeleton `databricks.yml`, job resource, and dbt factory mode templates (PyDABs hook, pyproject, Makefile, profiles) |
 | [`AGENTS.md`](AGENTS.md) | Codex CLI instruction file (same workflow as SKILL.md) |

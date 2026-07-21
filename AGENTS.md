@@ -27,11 +27,11 @@ Produce a deployable bundle: `databricks.yml`, `resources/*.yml` job definitions
 Read the provided Airflow DAG file(s) and extract:
 
 1. **DAG metadata**: `dag_id`, `schedule_interval`/`schedule`, `default_args`, `catchup`, `tags`, `params`
-2. **Task inventory**: For each task — `task_id`, operator class, operator-specific parameters (`python_callable`, `bash_command`, `sql`, `application`, `json`, etc.), `op_kwargs`, `op_args`
-3. **Dependency graph**: `>>` / `<<` chains, `set_upstream`/`set_downstream` calls
+2. **Task inventory**: For each task — `task_id`, operator class, operator-specific parameters (`python_callable`, `bash_command`, `sql`, `application`, `json`, etc.), `op_kwargs`, `op_args`. Recognize both Airflow 2 imports (`airflow.operators.*`/`airflow.sensors.*`) and **Airflow 3** imports (`airflow.sdk.*`, `airflow.providers.standard.{operators,sensors}.*`) — same mappings, different paths; never drop a task with an unrecognized import path. See `references/airflow3-migration.md`.
+3. **Dependency graph**: `>>` / `<<` chains, `set_upstream`/`set_downstream` calls, **and TaskFlow call wiring** (`b(a())` implies `depends_on`; `.override(task_id=...)` sets the key). Merge classic + TaskFlow edges.
 4. **Sensors**: Sensor tasks and their trigger conditions
-5. **TaskGroups / SubDAGs**: Grouped tasks and internal structure
-6. **Flags**: Custom operators, XCom usage, Airflow Variables, Airflow Connections, dynamic task mapping (`expand`), and custom timetable/dataset schedules
+5. **TaskGroups / SubDAGs**: Grouped tasks and internal structure, including **mapped task groups** (`@task_group.expand()`)
+6. **Flags**: Custom operators, XCom usage, Airflow Variables, Airflow Connections, dynamic task mapping (`.expand()`/`.expand_kwargs()`), **Airflow 3 `Asset` scheduling** (`schedule=[Asset(...)]`, boolean asset expressions, `AssetOrTimeSchedule`), and custom timetable/dataset schedules
 7. **dbt workloads**: cosmos imports (`DbtDag`, `DbtTaskGroup`, `ProjectConfig`, `ProfileConfig`, `RenderConfig`), dbt CLI operator families (`airflow_dbt`, `airflow_dbt_python`), dbt Cloud provider operators, and `BashOperator`/`SSHOperator` running `dbt (deps|seed|snapshot|run|test|build)`. Capture project_dir, profiles, target, selectors, vars, and whether the dbt project source / `manifest.json` is available. Cosmos groups appear as one summary row (Tier 2, "decision point — see Phase 2").
 
 Present a summary table before proceeding:
@@ -55,7 +55,9 @@ For each task:
 2. **Tier 2 (semantic)**: Reason about the operator's intent.
    - `BranchPythonOperator`: Simple comparison -> `condition_task`. Complex -> notebook + condition.
    - `DummyOperator`/`EmptyOperator`: Remove, rewire `depends_on`.
-   - `SubDagOperator`/`TaskGroup`: Flatten with prefixed keys, or extract via `run_job_task`.
+   - `SubDagOperator`/`TaskGroup`: Flatten with prefixed keys, or extract via `run_job_task`. (`SubDagOperator` removed in Airflow 3.)
+   - **Dynamic task mapping** (`.expand()`/`.expand_kwargs()`): `for_each_task` with `{{input}}`; `.partial()` -> constant `base_parameters`. Only for literal or upstream task-value/job-param collections (transport by size: literal ≤5,000 chars, task value ≤48 KiB, job param ≤10,000 chars, JSON). Flag multi-arg Cartesian products, chained/reduced mapping, non-deterministic collections. See the support matrix in `references/operator-mapping.md`.
+   - **Mapped task group** (`@task_group.expand()`): `for_each_task` -> `run_job_task` -> child job holding the subgraph. Set parent `concurrency`, raise child `max_concurrent_runs`, add `queue: {enabled: true}` on the child, keep Run Job nesting ≤ 3; per-iteration outputs aren't consumable downstream. See `references/operator-mapping.md`.
 3. **Tier 3 (sensors)**: Convert to job-level triggers per `references/schedule-trigger-mapping.md`.
    - File sensors -> `trigger.file_arrival`
    - Table/SQL sensors -> `trigger.table_update`
@@ -70,6 +72,7 @@ For schedule conversion (see `references/schedule-trigger-mapping.md`):
 - Extract timezone from `default_args` or `start_date`
 - Convert `@continuous` to job-level `continuous`
 - Map dataset/timetable schedules to `trigger.table_update` when deterministic, otherwise flag in MIGRATION_NOTES
+- Airflow 3 `Asset` scheduling: single/list/`|`/`&` -> `trigger.table_update` (`ALL_UPDATED`/`ANY_UPDATED`) only when the asset resolves to a UC table (explicit `extra={"databricks_table": ...}`, user mapping, or the skill-local `x-databricks-table:` scheme); else flag. `AssetOrTimeSchedule` (time+asset) -> flag. See `references/airflow3-migration.md`
 
 For Hadoop/on-prem migrations (see `references/hadoop-migration-guide.md`):
 - Convert HDFS paths to Unity Catalog volumes or cloud storage
@@ -117,8 +120,9 @@ Read these progressively as needed during each phase:
 
 - `references/operator-mapping.md` — Tier 1–4 mapping table with Airflow/DABs YAML examples
 - `references/dab-schema-reference.md` — DABs YAML schema (task types, triggers, clusters, variables)
-- `references/schedule-trigger-mapping.md` — Cron conversion, sensor-to-trigger, default_args, Jinja variables
-- `references/conversion-examples.md` — 5 complete before/after examples
+- `references/schedule-trigger-mapping.md` — Cron conversion, sensor-to-trigger, Airflow 3 Asset/`AssetOrTimeSchedule` scheduling + Asset→UC-table resolution rule, default_args, Jinja variables
+- `references/conversion-examples.md` — 6 complete before/after examples
+- `references/airflow3-migration.md` — Airflow 3 recognition: `airflow.sdk` + `apache-airflow-providers-standard` imports, Assets vs Datasets, asset scheduling, removed operators, recognize→safe-map→flag checklist
 - `references/hadoop-migration-guide.md` — HDFS paths, YARN configs, Hive-to-UC, spark-submit detection, Sqoop alternatives
 - `assets/templates/databricks.yml.tmpl` — Skeleton bundle config
 - `assets/templates/job-resource.yml.tmpl` — Skeleton job resource

@@ -1,0 +1,25 @@
+bundle:
+  name: regional-ingest-lakeflow
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for migrated tables.
+    default: main
+  schema:
+    description: Unity Catalog schema for migrated tables.
+    default: commerce
+  orders_raw_table:
+    description: Unity Catalog table monitored by the Asset-driven table_update trigger.
+    default: main.commerce.orders_raw
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    run_as:
+      service_principal_name: "<SERVICE_PRINCIPAL_NAME>"

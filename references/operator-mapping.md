@@ -55,6 +55,107 @@ df = spark.read.table(source_table)
 df.write.format("delta").save(target_path)
 ```
 
+#### TaskFlow dependency extraction
+
+TaskFlow (`@task`) DAGs express dependencies through **function-call wiring (XComArg)**, not only
+`>>`/`<<`. Extract the graph from the calls as well as the operators:
+
+- **Call wiring implies `depends_on`.** `b(a())` (or `x = a(); b(x)`) means `b` depends on `a`.
+  Each passed return value is an XComArg edge — add a `depends_on` entry for it. A task called with
+  no upstream XComArgs and no explicit `>>` is a root task.
+- **`.override(task_id="...")`** renames the task; use the overridden id as the task key. The same
+  decorated function called twice (with or without `.override`) is **two** tasks — key them by the
+  resolved `task_id`, not the function name.
+- **Return value → task value.** A `@task` return becomes `dbutils.jobs.taskValues.set(key="return_value", value=...)`
+  in the generated notebook; the consumer reads it via `{{tasks.<key>.values.return_value}}` (as a
+  parameter) or `dbutils.jobs.taskValues.get(taskKey="<key>", key="return_value")` (in-notebook).
+  Values must be JSON-serializable and ≤48 KiB (see `references/dab-schema-reference.md`).
+- **`multiple_outputs=True`** (or a dict-returning `@task` with a dict return annotation) splits the
+  returned dict into one task value **per key**, each separately referenceable
+  (`{{tasks.<key>.values.<dict_key>}}`). Set each key with its own `taskValues.set` call.
+- **Mixed classic + TaskFlow.** A classic operator instance can be passed into or wired around
+  `@task` calls; resolve both the `>>`/`<<` edges and the call-wiring edges into one dependency
+  graph before emitting `depends_on`.
+
+**Worked return-value example** — `load(transform(extract()))`:
+
+```python
+@task
+def extract() -> dict:                       # multiple_outputs inferred from dict return
+    return {"rows": 1000, "path": "/mnt/bronze/events"}
+
+@task
+def transform(rows: int, path: str) -> str:
+    return f"{path}_silver"
+
+@task
+def load(silver_path: str) -> None:
+    print(f"publishing {silver_path}")
+
+extracted = extract()
+load(transform(rows=extracted["rows"], path=extracted["path"]))
+```
+
+```yaml
+- task_key: extract
+  notebook_task:
+    notebook_path: ../src/extract.py
+- task_key: transform
+  depends_on:
+    - task_key: extract
+  notebook_task:
+    notebook_path: ../src/transform.py
+    base_parameters:
+      rows: "{{tasks.extract.values.rows}}"
+      path: "{{tasks.extract.values.path}}"
+- task_key: load
+  depends_on:
+    - task_key: transform
+  notebook_task:
+    notebook_path: ../src/load.py
+    base_parameters:
+      silver_path: "{{tasks.transform.values.return_value}}"
+```
+
+Generated `src/extract.py` sets one task value per output key:
+
+```python
+# Databricks notebook source
+dbutils.jobs.taskValues.set(key="rows", value=1000)
+dbutils.jobs.taskValues.set(key="path", value="/mnt/bronze/events")
+```
+
+`src/transform.py` reads its inputs from widgets and sets its single return value:
+
+```python
+# Databricks notebook source
+dbutils.widgets.text("rows", "")
+dbutils.widgets.text("path", "")
+rows = int(dbutils.widgets.get("rows"))
+path = dbutils.widgets.get("path")
+
+silver_path = f"{path}_silver"
+dbutils.jobs.taskValues.set(key="return_value", value=silver_path)
+```
+
+#### TaskFlow decorator variants
+
+The direct mapping above covers **core `@task` dataflow**. Other `@task.*` / lifecycle decorators
+need their own handling — recognize each explicitly so a variant is never silently emitted as a
+plain `notebook_task`:
+
+| Decorator | Disposition |
+|---|---|
+| `@task` (core) | `notebook_task`; dataflow via `dbutils.jobs.taskValues` (above). |
+| `@task.bash` | `notebook_task` wrapping the returned command (follow BashOperator rules — parse for `spark-submit`). |
+| `@task.branch` | Same as `BranchPythonOperator` — `condition_task` (simple comparison) or notebook-sets-value + `condition_task` (complex). |
+| `@task.short_circuit` | `condition_task` gating downstream (skip on false). **Flag** when `ignore_downstream_trigger_rules` is non-default or the skip fan-out is complex — Lakeflow's skip propagation differs from Airflow's. |
+| `@task.virtualenv` / `@task.external_python` | `notebook_task`; **flag** the environment/deps — recreate via a serverless environment or `%pip install`, record in `MIGRATION_NOTES.md`. |
+| `@task.sensor` | Tier-3 job-level trigger **only** when it is a *root* sensor whose `PokeReturnValue` output is unused; otherwise **flag** or keep the polling logic in a notebook. |
+| `@task.run_if` / `@task.skip_if` | The predicate is arbitrary runtime context, but Lakeflow `run_if` evaluates only **upstream task states**. Map a status-equivalent predicate to `run_if`; map other predicates through a `condition_task`; **flag** anything not reducible to either. |
+| `@setup` / `@teardown` | **Flag** — no native Lakeflow setup/teardown lifecycle. Emit as ordinary first/last tasks and note the semantic loss. |
+| `@task.kubernetes` / `@task.docker` / other provider `@task.*` | **Flag** — route through the matching Tier-2/Tier-4 operator rule (`KubernetesPodOperator`, `DockerOperator`, …). |
+
 ---
 
 ### BashOperator
@@ -737,6 +838,8 @@ from sklearn.preprocessing import StandardScaler
 
 Flatten the nested tasks into the parent job, preserving dependency order. Prefix task keys with the group name for clarity.
 
+> `SubDagOperator` is **removed in Airflow 3** — this mapping applies to Airflow 2 DAGs (and to `TaskGroup`, which remains). See `references/airflow3-migration.md`. For a `TaskGroup` fanned out over a collection with `@task_group.expand()`, use the **Mapped task group** pattern below, not this flatten.
+
 **Airflow:**
 
 ```python
@@ -759,6 +862,154 @@ with TaskGroup("data_quality") as quality_group:
   notebook_task:
     notebook_path: ../src/check_schema.py
 ```
+
+---
+
+### Dynamic task mapping (`.expand()` / `.expand_kwargs()`)
+
+**DABs task type:** `for_each_task`
+
+Airflow dynamic task mapping fans one task out over a collection resolved at runtime. This maps to
+a `for_each_task`, whose nested task runs once per element with `{{input}}` (the element) or
+`{{input.<key>}}` (a field) available in its parameters. See `references/dab-schema-reference.md`
+for the `for_each_task` schema, the `{{input}}` reference, and the `inputs` size limits.
+
+**Airflow:**
+
+```python
+@task
+def build_targets() -> list[str]:
+    return ["orders", "customers", "returns"]
+
+@task
+def checksum(table: str, catalog: str) -> None:
+    print(f"checksum {catalog}.{table}")
+
+checksum.partial(catalog="main").expand(table=build_targets())
+```
+
+**DABs YAML** (`.partial` kwargs become constant `base_parameters`; the `.expand` arg is `{{input}}`):
+
+```yaml
+- task_key: build_targets
+  notebook_task:
+    notebook_path: ../src/build_targets.py     # sets a JSON-array task value: values.tables
+- task_key: checksum
+  depends_on:
+    - task_key: build_targets
+  for_each_task:
+    inputs: "{{tasks.build_targets.values.tables}}"
+    concurrency: 3                               # default is 1 (sequential) — set to fan out
+    task:
+      task_key: checksum_iteration
+      notebook_task:
+        notebook_path: ../src/checksum.py
+        base_parameters:
+          table: "{{input}}"                     # the .expand arg
+          catalog: "main"                        # the .partial kwarg (constant)
+```
+
+**Support matrix** — how each mapping shape converts (or why it's flagged):
+
+| Airflow pattern | DABs mapping / disposition |
+|---|---|
+| `.expand(x=<literal list>)` | `for_each_task`, `inputs` = JSON-array **literal** (≤5,000 chars); `{{input}}` in the nested task. |
+| `.expand(x=<upstream XComArg>)` | Upstream task writes a JSON array **task value**; `inputs` = `{{tasks.<k>.values.<n>}}` (≤48 KiB). |
+| `.partial(const=…).expand(x=…)` | `partial` kwargs → constant `base_parameters`; `expand` arg → `{{input}}`. |
+| `.expand_kwargs(<list-of-dicts>)` | Object elements; reference fields via `{{input.<key>}}`. |
+| Multi-arg `.expand(a=…, b=…)` (Cartesian product) | **Flag.** `for_each_task` takes one `inputs` array — precompute the product into a single array of objects upstream, or manual review. |
+| Chained mapping (a mapped task's output feeds another mapped task) | **Flag.** A mapped task's per-iteration **outputs cannot be collected/consumed** by another mapped task; factor into a child job or manual review. |
+| Mapped-output **reduction** (a non-mapped task consuming all mapped results) | **Flag.** Downstream cannot read for-each iteration outputs — have each iteration **persist** its result (table/volume) and add a manual aggregation task that reads the persisted results, **not** the original input array. |
+| Collection non-deterministic at parse time | **Flag** for manual review. |
+| `zip` / `map` / filtered inputs | Precompute the final array upstream (task value / job parameter) and reference via `{{input}}`. |
+
+**Choose the `inputs` transport by size** (all must be JSON-serializable): a small **literal**
+array (≤5,000 chars) inline; a larger array through an upstream **task value** (≤48 KiB); or a
+**job-parameter** ref (≤10,000 chars). Oversize or non-JSON collections must be flagged in
+`MIGRATION_NOTES.md`, never silently truncated.
+
+---
+
+### Mapped task group (`@task_group.expand()` / `TaskGroup.partial().expand()`)
+
+**DABs equivalent:** `for_each_task` → `run_job_task` → a **child job** holding the group's subgraph
+
+A mapped task group fans a *multi-step subgraph* out over a collection. A `for_each_task` holds
+exactly one nested task and cannot nest another `for_each_task`, but the nested task **can** be a
+`run_job_task` — so move the group's subgraph into a child job and iterate over it:
+
+- **Parent job:** a `for_each_task` whose nested task is a `run_job_task` targeting the child job,
+  passing the element via `job_parameters` (`{{input}}` or `{{input.<key>}}`).
+- **Child job:** the group's steps as `depends_on`-chained tasks, each reading the element from a
+  **job parameter**.
+
+**Airflow:**
+
+```python
+@task_group
+def region_pipeline(region: str):
+    ingested = ingest(region)
+    validated = validate(ingested)
+    publish(validated)
+
+region_pipeline.expand(region=["us", "eu", "apac"])
+```
+
+**Parent job YAML:**
+
+```yaml
+- task_key: region_pipeline
+  for_each_task:
+    inputs: '["us", "eu", "apac"]'
+    concurrency: 3
+    task:
+      task_key: region_pipeline_iteration
+      run_job_task:
+        job_id: ${resources.jobs.region_pipeline_job.id}
+        job_parameters:
+          region: "{{input}}"
+```
+
+**Child job YAML** (`region_pipeline_job`) — the subgraph, reading `region` from a job parameter:
+
+```yaml
+parameters:
+  - name: region
+    default: ""
+tasks:
+  - task_key: ingest
+    notebook_task:
+      notebook_path: ../src/region_ingest.py
+      base_parameters:
+        region: "{{job.parameters.region}}"
+  - task_key: validate
+    depends_on: [{ task_key: ingest }]
+    notebook_task:
+      notebook_path: ../src/region_validate.py
+      base_parameters:
+        region: "{{job.parameters.region}}"
+  - task_key: publish
+    depends_on: [{ task_key: validate }]
+    notebook_task:
+      notebook_path: ../src/region_publish.py
+      base_parameters:
+        region: "{{job.parameters.region}}"
+```
+
+**Rules this pattern requires** (see `references/dab-schema-reference.md`):
+
+- **Concurrency + queueing.** Set the parent `for_each_task.concurrency`, raise the child job's
+  `max_concurrent_runs` to at least that value, and set `queue: { enabled: true }` on the child
+  job — bundle/API jobs do **not** inherit the UI's default-on queueing, so without it excess
+  iterations are skipped rather than queued. Size `max_concurrent_runs` for overlapping parent
+  runs too (K parent runs × N iterations).
+- **Run Job nesting ≤ 3 levels.** `for_each → run_job → child` uses one level; if the child itself
+  calls Run Job, verify total depth stays within 3.
+- **No cross-iteration outputs.** Downstream consumption of per-element results is manual (persist
+  each child run's result to a table/volume, then aggregate those records separately).
+
+Record the subgraph→child-job decomposition and the observability shift (one child-job run per
+element) in `MIGRATION_NOTES.md`.
 
 ---
 
@@ -1359,7 +1610,7 @@ These operators have no direct DABs equivalent. Flag them in `MIGRATION_NOTES.md
 | `DbtCloudRunJobOperator` / `DbtCloudJobRunSensor` | `notebook_task` calling the dbt Cloud API, or full migration to dbt factory mode / `dbt_task` | dbt Cloud owns orchestration and compute — factory mode does not apply unless the dbt project itself migrates to Databricks. The notebook fallback needs dbt Cloud `account_id`/`job_id` and an API token in secrets. |
 | `BashOperator` (wrapping `spark-submit`) | `spark_python_task` or `spark_jar_task` | Parse the spark-submit command and convert. See `hadoop-migration-guide.md`. |
 | `SSHOperator` (wrapping `spark-submit`) | `spark_python_task` or `spark_jar_task` | Extract the remote command. SSH hop is eliminated. See `hadoop-migration-guide.md`. |
-| Airflow dynamic task mapping (`expand`, mapped TaskFlow tasks) | `for_each_task` | Convert mapped fan-out to `for_each_task` with a deterministic JSON array input, or flag for manual review if mapping logic is dynamic/non-deterministic at parse time. |
+| Airflow dynamic task mapping (`.expand()`, mapped TaskFlow tasks / task groups) | `for_each_task` | **Not Tier 4** — see the Tier-2 **Dynamic task mapping** and **Mapped task group** sections above for the full support matrix and the `for_each → run_job → child job` pattern. Listed here only as a pointer. |
 | XCom-heavy patterns | `dbutils.jobs.taskValues` | Replace `xcom_push`/`xcom_pull` with `dbutils.jobs.taskValues.set()` and dynamic value references `{{tasks.<key>.values.<name>}}`. |
 | Airflow Variables | DABs variables or job parameters | Replace `Variable.get()` with `${var.<name>}` in YAML or `dbutils.widgets.get()` in notebooks. |
 | Airflow Connections | Databricks secrets or UC connections | Replace `BaseHook.get_connection()` with `dbutils.secrets.get()` or Unity Catalog connection references. |

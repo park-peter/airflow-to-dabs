@@ -184,17 +184,38 @@ trigger:
 
 ---
 
-## Airflow Timetable and Dataset Scheduling
+## Airflow Timetable, Dataset, and Asset Scheduling
 
-Airflow DAGs can use non-cron schedule APIs that are not 1:1 with a Quartz cron.
+Airflow DAGs can use non-cron schedule APIs that are not 1:1 with a Quartz cron. In **Airflow 3**,
+"Datasets" are renamed **Assets** (`airflow.sdk.Asset`); the scheduling mappings below apply to
+both `Dataset(...)` (Airflow 2) and `Asset(...)` (Airflow 3). See `references/airflow3-migration.md`.
 
 | Airflow Scheduling Pattern | DABs Mapping |
 |---|---|
-| `schedule=[Dataset(...)]` / dataset event scheduling | Prefer `trigger.table_update` on the upstream Unity Catalog table(s). |
+| `schedule=[Dataset(...)]` / `schedule=[Asset(...)]` (single) | `trigger.table_update` on the upstream Unity Catalog table — **only** when the asset resolves to a UC table (see resolution rule below); otherwise flag. |
+| `schedule=[asset_a, asset_b]` (list — Airflow: ALL updated) | `trigger.table_update` on both tables with `condition: ALL_UPDATED`. |
+| `schedule=(asset_a \| asset_b)` (OR) | `trigger.table_update` with `condition: ANY_UPDATED`. |
+| `schedule=(asset_a & asset_b)` (AND) | `trigger.table_update` with `condition: ALL_UPDATED`. |
+| `AssetOrTimeSchedule(timetable=..., assets=...)` (time **and** asset) | **Flag** — a single Lakeflow job takes either a `schedule` **or** a trigger, not both as a clean 1:1. Choose the dominant intent (or split), and record the tradeoff in `MIGRATION_NOTES.md`. |
 | Custom `Timetable` subclass | Flag for manual review and map to `schedule` or `trigger` based on business intent. |
 | `@continuous` | Use job-level `continuous` (not periodic trigger). |
 
-If a dataset or timetable schedule cannot be deterministically mapped, add a required action item in `MIGRATION_NOTES.md`.
+**Asset → UC-table resolution rule.** An Airflow `Asset` URI is an arbitrary string (it may be an
+S3 path, a file path, a custom scheme, or a bare name) — there is **no** official Airflow/Databricks
+convention that encodes a Unity Catalog table in it. So the default is to **flag**, and an asset
+maps to `trigger.table_update` only when the target table is stated unambiguously by one of:
+
+1. **Explicit metadata (recommended):** `Asset("orders-raw", extra={"databricks_table": "<catalog>.<schema>.<table>"})`.
+2. **A user-supplied URI→table mapping** given in the conversion prompt.
+3. **A skill-local scheme with exact parsing:** the URI is `x-databricks-table:<catalog>.<schema>.<table>`.
+   This is a convention of *this skill only* — document it as such in `MIGRATION_NOTES.md`; it is not
+   an Airflow or Databricks standard.
+
+Any other asset URI (`s3://…`, `file://…`, a bare string, or an ambiguous scheme) → **flag for
+manual review** in `MIGRATION_NOTES.md`. Never guess a table from the URI.
+
+If a dataset/asset or timetable schedule cannot be deterministically mapped, add a required action
+item in `MIGRATION_NOTES.md`.
 
 ---
 

@@ -26,11 +26,11 @@ Produce a deployable bundle: `databricks.yml`, `resources/*.yml` job definitions
 Read the provided Airflow DAG file(s) and extract:
 
 1. **DAG metadata**: `dag_id`, `schedule_interval`/`schedule`, `default_args`, `catchup`, `tags`, `params`
-2. **Task inventory**: For each task — `task_id`, operator class, operator-specific parameters (`python_callable`, `bash_command`, `sql`, `application`, `json`, etc.), `op_kwargs`, `op_args`
-3. **Dependency graph**: `>>` / `<<` chains, `set_upstream`/`set_downstream` calls
+2. **Task inventory**: For each task — `task_id`, operator class, operator-specific parameters (`python_callable`, `bash_command`, `sql`, `application`, `json`, etc.), `op_kwargs`, `op_args`. Recognize both Airflow 2 imports (`airflow.operators.*`/`airflow.sensors.*`) and **Airflow 3** imports (`airflow.sdk.*`, `airflow.providers.standard.{operators,sensors}.*`) — same mappings, different import paths; never drop a task whose import path is unrecognized (see the Airflow 3 rules below).
+3. **Dependency graph**: `>>` / `<<` chains, `set_upstream`/`set_downstream` calls, **and TaskFlow call wiring** (`b(a())` implies `depends_on`; `.override(task_id=...)` sets the key) — merge classic + TaskFlow edges
 4. **Sensors**: Sensor tasks and their trigger conditions
-5. **TaskGroups / SubDAGs**: Grouped tasks and internal structure
-6. **Flags**: Custom operators, XCom usage, Airflow Variables, Airflow Connections, dynamic task mapping (`expand`), and custom timetable/dataset schedules
+5. **TaskGroups / SubDAGs**: Grouped tasks and internal structure, including **mapped task groups** (`@task_group.expand()`)
+6. **Flags**: Custom operators, XCom usage, Airflow Variables, Airflow Connections, dynamic task mapping (`.expand()`/`.expand_kwargs()`), **Airflow 3 `Asset` scheduling** (`schedule=[Asset(...)]`, boolean asset expressions, `AssetOrTimeSchedule`), and custom timetable/dataset schedules
 7. **dbt workloads**: cosmos imports (`DbtDag`, `DbtTaskGroup`, `ProjectConfig`, `ProfileConfig`, `RenderConfig`), dbt CLI operator families (`airflow_dbt`, `airflow_dbt_python`), dbt Cloud provider operators, and `BashOperator`/`SSHOperator` running `dbt (deps|seed|snapshot|run|test|build)`. Capture project_dir, profiles, target, selectors, vars, and whether the dbt project source / `manifest.json` is available. Cosmos groups appear as one summary row (Tier 2, "decision point — see the dbt rules below").
 
 Present a summary table before proceeding:
@@ -54,7 +54,7 @@ Use the embedded mapping rules below as authoritative in Copilot (do not rely on
 
 **Tier 1 (direct mappings):**
 
-- `PythonOperator` -> `spark_python_task` (extract callable into `src/<task_id>.py`)
+- `PythonOperator` / `@task` (TaskFlow) -> `notebook_task` / `spark_python_task` (extract callable into `src/<task_id>.py`). TaskFlow dataflow: a `@task` return -> `dbutils.jobs.taskValues.set(key="return_value", value=...)`, consumed via `{{tasks.<key>.values.return_value}}`; `multiple_outputs=True` (or a dict return) -> one task value per dict key. `.override(task_id=...)` sets the task key. Variant decorators: `@task.branch`/`@task.short_circuit` -> `condition_task`; `@task.bash` -> BashOperator rules; `@task.virtualenv`/`@task.external_python` -> `notebook_task` + env note; `@task.sensor` -> Tier-3 trigger only if a root sensor with unused `PokeReturnValue`, else flag; `@task.run_if`/`@task.skip_if` -> `run_if` only for status-equivalent predicates, else `condition_task` or flag; `@setup`/`@teardown` -> flag (no native lifecycle)
 - `BashOperator` -> `spark_python_task` with a thin wrapper calling `subprocess.run(...)`, or `notebook_task` for trivial commands
 - `SparkSubmitOperator` -> `spark_python_task` or `spark_jar_task` (translate `spark-submit` args; remove YARN-only flags)
 - `DatabricksNotebookOperator` -> `notebook_task`
@@ -77,7 +77,9 @@ Use the embedded mapping rules below as authoritative in Copilot (do not rely on
     - `custom_tags.ResourceClass: SingleNode`
   - Use dedicated/single-user style access mode (`data_security_mode: SINGLE_USER`)
   - Image requirements: include DCS prerequisites and start as root (non-root startup can fail with `CONTAINER_LAUNCH_FAILURE`)
-- `TaskGroup` / `SubDagOperator` -> flatten tasks with prefixed `task_key`s or extract to `run_job_task`
+- `TaskGroup` / `SubDagOperator` -> flatten tasks with prefixed `task_key`s or extract to `run_job_task` (`SubDagOperator` is removed in Airflow 3)
+- Dynamic task mapping (`.expand()` / `.expand_kwargs()`) -> `for_each_task` with `{{input}}` (whole element) / `{{input.<key>}}` (field) in the nested task; `.partial()` kwargs -> constant `base_parameters`. Map only when the collection is a literal or an upstream task-value/job-param ref; choose the `inputs` transport by size (JSON-array literal ≤5,000 chars, task-value ref ≤48 KiB, job-param ref ≤10,000 chars — all JSON-serializable). Flag multi-arg Cartesian products, chained mapping, mapped-output reduction (downstream can't read for-each iteration outputs — persist per-iteration then aggregate separately), and non-deterministic collections
+- Mapped task group (`@task_group.expand()`) -> `for_each_task` whose nested task is a `run_job_task` targeting a **child job** that holds the group's subgraph (a `for_each_task` nests exactly one task, not a subgraph). Pass the element via `job_parameters: {..: "{{input}}"}`. Set parent `for_each_task.concurrency`, raise the child job's `max_concurrent_runs` to match, and set `queue: {enabled: true}` on the child job (bundle/API jobs don't inherit the UI's default-on queueing — excess iterations are otherwise skipped). Keep total Run Job nesting ≤ 3 levels
 - cosmos `DbtDag` / `DbtTaskGroup` -> dbt factory mode (the only faithful mapping — cosmos renders dbt models as Airflow tasks at runtime from `manifest.json`, so the group is statically unparseable; swap the generator instead of translating tasks)
 - `DummyOperator` / `EmptyOperator` -> remove task and rewire dependencies
 
@@ -101,7 +103,8 @@ The mapping process follows four tiers:
    - `BranchPythonOperator`: Simple comparison -> `condition_task`. Complex -> notebook + condition.
    - `KubernetesPodOperator`/`DockerOperator`: Use Databricks Container Services with `docker_image` on a single-node cluster. Decision depends on whether the image is Python-based, JVM-based, or another runtime.
    - `DummyOperator`/`EmptyOperator`: Remove, rewire `depends_on`.
-   - `SubDagOperator`/`TaskGroup`: Flatten with prefixed keys, or extract via `run_job_task`.
+   - `SubDagOperator`/`TaskGroup`: Flatten with prefixed keys, or extract via `run_job_task` (`SubDagOperator` removed in Airflow 3).
+   - **Dynamic task mapping** / **mapped task group**: see the embedded Tier-2 rules above (`for_each_task`; mapped groups go `for_each_task` -> `run_job_task` -> child job with `concurrency`/`max_concurrent_runs`/`queue` set and Run Job nesting ≤ 3).
 3. **Tier 3 (sensors)**: Convert to job-level triggers.
    - File sensors -> `trigger.file_arrival`
    - Table/SQL sensors -> `trigger.table_update`
@@ -120,6 +123,12 @@ For schedule conversion:
 - Convert Airflow 5-field cron to 6-field Quartz cron (prepend `0` for seconds, adjust day-of-week, normalize Sunday `0/7 -> 1`)
 - Convert presets (`@daily`, `@hourly`) to Quartz equivalents
 - Extract timezone from `default_args` or `start_date`
+- Airflow 3 `Asset`/`Dataset` scheduling -> `trigger.table_update` only when the asset resolves to a UC table via explicit `extra={"databricks_table": "catalog.schema.table"}`, a user-supplied mapping, or the skill-local `x-databricks-table:` URI scheme — else flag (an `Asset` URI is an arbitrary string; never infer a table from it). `schedule=[a, b]` (list) -> `ALL_UPDATED`; `a | b` -> `ANY_UPDATED`; `a & b` -> `ALL_UPDATED`. `AssetOrTimeSchedule` (time+asset) -> flag (a Lakeflow job takes a schedule OR a trigger, not both 1:1)
+
+For Airflow 3 authoring surface (recognize -> safe-map -> flag):
+- Imports moved: `airflow.sdk` (`dag`, `task`, `task_group`, `Asset`, `BaseOperator`, `Variable`, `Connection`, `chain`) and `apache-airflow-providers-standard` (`airflow.providers.standard.operators.{python,bash,trigger_dagrun,...}`, `airflow.providers.standard.sensors.{external_task,filesystem,time,time_delta,...}`). Same operator mappings, different paths. Airflow 3.0–3.1 still accepts legacy `airflow.operators.*`/`airflow.sensors.*` with deprecation warnings — recognize both
+- `schedule_interval=` is removed (use `schedule=`); `SubDagOperator` is removed
+- Flag (no clean mapping): the `@asset` decorator, `AssetWatcher`, asset aliases, DAG versioning/bundles, deadline alerts
 
 For Hadoop/on-prem migrations:
 - Convert HDFS paths to Unity Catalog volumes or cloud storage
