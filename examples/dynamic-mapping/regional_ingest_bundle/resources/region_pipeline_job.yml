@@ -1,0 +1,49 @@
+resources:
+  jobs:
+    region_pipeline_job:
+      name: region-pipeline-lakeflow
+      description: Child job holding the region_pipeline mapped-task-group subgraph (one run per region).
+      tags:
+        source: airflow-migration
+        source_dag_id: regional_ingest
+        domain: orders
+      # Sized for the parent for_each concurrency (3). Raise further to also cover
+      # overlapping parent runs (K parents x N iterations).
+      max_concurrent_runs: 6
+      # Bundle/API jobs do NOT inherit the UI's default-on queueing. Without this,
+      # concurrent for_each iterations beyond max_concurrent_runs are skipped, not queued.
+      queue:
+        enabled: true
+
+      parameters:
+        - name: region
+          default: ""
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+
+      tasks:
+        - task_key: ingest
+          notebook_task:
+            notebook_path: ../src/region_ingest.py
+            base_parameters:
+              region: "{{job.parameters.region}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+
+        - task_key: validate
+          depends_on:
+            - task_key: ingest
+          notebook_task:
+            notebook_path: ../src/region_validate.py
+            base_parameters:
+              silver_table: "{{tasks.ingest.values.return_value}}"
+
+        - task_key: publish
+          depends_on:
+            - task_key: validate
+          notebook_task:
+            notebook_path: ../src/region_publish.py
+            base_parameters:
+              silver_table: "{{tasks.validate.values.return_value}}"

@@ -1,0 +1,78 @@
+resources:
+  jobs:
+    regional_ingest_job:
+      name: regional-ingest-lakeflow
+      description: Migrated Lakeflow Job for the regional_ingest Airflow 3 DAG (parent).
+      tags:
+        source: airflow-migration
+        source_dag_id: regional_ingest
+        domain: orders
+      max_concurrent_runs: 1
+
+      # Airflow 3 schedule=[Asset(...)] with extra["databricks_table"] resolves to a
+      # table_update trigger on that Unity Catalog table.
+      trigger:
+        pause_status: UNPAUSED
+        table_update:
+          condition: ANY_UPDATED
+          table_names:
+            - ${var.orders_raw_table}
+          min_time_between_triggers_seconds: 300
+          wait_after_last_change_seconds: 60
+
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+
+      tasks:
+        # --- TaskFlow dataflow (non-mapped): plan_run -> announce -------------------
+        # plan_run uses multiple_outputs, so each returned key is its own task value.
+        - task_key: plan_run
+          notebook_task:
+            notebook_path: ../src/plan_run.py
+            base_parameters:
+              regions: '["us", "eu", "apac"]'
+
+        - task_key: announce
+          depends_on:
+            - task_key: plan_run
+          notebook_task:
+            notebook_path: ../src/announce.py
+            base_parameters:
+              # Consumes one named output of plan_run (multiple_outputs).
+              batch_size: "{{tasks.plan_run.values.batch_size}}"
+
+        # --- Dynamic task mapping: checksum.partial(catalog=...).expand(table=...) --
+        # A literal collection maps directly to a for_each with a notebook body.
+        - task_key: checksum
+          for_each_task:
+            inputs: '["orders", "customers", "returns"]'
+            concurrency: 3
+            task:
+              task_key: checksum_iteration
+              notebook_task:
+                notebook_path: ../src/checksum.py
+                base_parameters:
+                  table: "{{input}}"     # the .expand argument
+                  catalog: "main"        # the .partial constant
+
+        # --- Mapped task group: region_pipeline.expand(region=REGIONS) -------------
+        # The group's multi-step subgraph lives in the child job; the for_each nested
+        # task is a run_job_task, passing the element via job_parameters.
+        - task_key: region_pipeline
+          depends_on:
+            - task_key: announce
+            - task_key: checksum
+          for_each_task:
+            inputs: '["us", "eu", "apac"]'
+            concurrency: 3
+            task:
+              task_key: region_pipeline_iteration
+              run_job_task:
+                job_id: ${resources.jobs.region_pipeline_job.id}
+                job_parameters:
+                  region: "{{input}}"
+                  catalog: "{{job.parameters.catalog}}"
+                  schema: "{{job.parameters.schema}}"

@@ -824,3 +824,62 @@ For a 5-node dbt project (1 seed, 3 models, 2 tests) this generates a 6-task job
 - Generated selectors are rewritten to full FQNs (`--select fqn:...`) and validated exact against dbt's own matcher; the hook fails closed on unit tests, task-key collisions, non-exact selectors, and any full-FQN component outside `[A-Za-z0-9_.-]`. Vars go only through `dbt_vars.json` / the `dbt_vars` parameter — a command-level `--vars` (either spelling) is rejected by both the glue and the runner.
 - `dbt_serverless_env.yaml` pins the installed `dbt-databricks` and `dbt-core` exactly (dbt-core parity keeps the runtime matcher identical to the one the glue checks against).
 - Deploy prerequisite: `make setup && make manifest` (venv + `dbt parse` into `target/dev/`) before `databricks bundle validate`/`deploy`; for prod, `make deploy TARGET=prod` — manifests are per-target because parse bakes in profile-resolved catalog/schema.
+
+---
+
+## Example 6: Airflow 3 Dynamic Mapping + Mapped Task Group (Two Jobs)
+
+An **Airflow 3** DAG (authored with the Task SDK) that exercises TaskFlow return-value dataflow,
+dynamic task mapping (`.expand()`), and a mapped task group (`@task_group.expand()`). A complete,
+validated version lives in `examples/dynamic-mapping/`.
+
+### Airflow DAG (abridged)
+
+```python
+from airflow.sdk import Asset, dag, task, task_group
+from airflow.providers.standard.operators.empty import EmptyOperator
+
+ORDERS_RAW = Asset("orders-raw", extra={"databricks_table": "main.commerce.orders_raw"})
+
+@task(multiple_outputs=True)
+def plan_run(regions: list[str]) -> dict:
+    return {"regions": regions, "batch_size": len(regions)}
+
+@task
+def checksum(table: str, catalog: str) -> None: ...
+
+@task_group
+def region_pipeline(region: str):
+    publish(validate(ingest(region)))     # multi-step subgraph per region
+
+@dag(dag_id="regional_ingest", schedule=[ORDERS_RAW], catchup=False)
+def regional_ingest():
+    plan = plan_run(regions=["us", "eu", "apac"])
+    announce(batch_size=plan["batch_size"])                 # TaskFlow dataflow (non-mapped)
+    checksum.partial(catalog="main").expand(table=["orders", "customers", "returns"])
+    region_pipeline.expand(region=["us", "eu", "apac"])     # mapped task group
+```
+
+### DABs Output
+
+A two-job bundle (see `examples/dynamic-mapping/regional_ingest_bundle/`): a **parent** job with
+the TaskFlow chain, the `.expand()` → `for_each_task` (notebook body, `{{input}}` = table), and the
+mapped group → `for_each_task` whose body is a `run_job_task`; and a **child** job holding the
+`ingest → validate → publish` subgraph, one run per region.
+
+**Migration notes:**
+- Airflow 3 recognition: `airflow.sdk` and `airflow.providers.standard.*` imports map like their
+  Airflow 2 equivalents; only the import path differs. See `references/airflow3-migration.md`.
+- `schedule=[Asset(..., extra={"databricks_table": "..."})]` → `trigger.table_update`. An Asset URI
+  is an arbitrary string, so a table is bound only via `extra`, a user mapping, or the skill-local
+  `x-databricks-table:` scheme — otherwise flag. See `references/schedule-trigger-mapping.md`.
+- `multiple_outputs=True` splits `plan_run`'s dict into one task value per key; `announce` reads
+  `{{tasks.plan_run.values.batch_size}}`. Shown on a non-mapped chain because a mapped task's
+  outputs cannot be consumed downstream.
+- Mapped task group → `for_each_task` → `run_job_task` → child job (a `for_each_task` nests one
+  task, not a subgraph). Parent `concurrency` is set, the child raises `max_concurrent_runs` and
+  sets `queue: { enabled: true }` (bundle jobs don't inherit UI queueing), and Run Job nesting
+  stays ≤ 3. Per-iteration outputs require explicit table/volume persistence plus a separate
+  aggregation task.
+- See the **Dynamic task mapping** and **Mapped task group** sections in
+  `references/operator-mapping.md` for the full support matrix and per-transport `inputs` limits.

@@ -315,6 +315,30 @@ Triggers another Databricks job.
       env: "prod"
 ```
 
+**Nesting limit:** Run Job tasks may nest at most **3 levels deep** (a job runs a job runs a
+job); Databricks rejects deeper nesting and circular dependencies. A `for_each_task` whose body
+is a `run_job_task` (the mapped-task-group pattern) consumes one of those levels — budget the
+remaining depth accordingly.
+
+**Concurrency of the target job:** The target job's own `max_concurrent_runs` (default **1**)
+gates how many of its runs proceed at once. When a job is triggered repeatedly — e.g. a
+`for_each_task` with `concurrency > 1` whose body is a `run_job_task` — raise the target job's
+`max_concurrent_runs` to at least that concurrency (and account for **overlapping parent runs**),
+otherwise excess triggers serialize. Also set `queue: { enabled: true }` explicitly on the target
+job: a bundle/API-defined job does **not** inherit the UI's default-on queueing, so without it
+excess concurrent triggers are **skipped** rather than queued (queued runs wait up to 48 h).
+
+```yaml
+resources:
+  jobs:
+    region_pipeline_job:
+      name: region_pipeline
+      max_concurrent_runs: 8          # ≥ the driving for_each concurrency (+ overlapping parents)
+      queue:
+        enabled: true                 # bundle jobs don't inherit UI default-on queueing
+      # ... tasks ...
+```
+
 ---
 
 ### condition_task
@@ -350,18 +374,47 @@ If/else conditional logic. Does not require a cluster.
 
 ### for_each_task
 
-Iterates a nested task over an array of inputs.
+Iterates a **single** nested task over an array of inputs.
 
 ```yaml
 - task_key: process_all
   for_each_task:
-    inputs: "{{tasks.generate_list.values.items}}"  # Required. JSON array or task value ref.
-    concurrency: 5                                   # Optional. Max parallel iterations.
-    task:                                            # Required. Nested task definition.
+    inputs: "{{tasks.generate_list.values.items}}"  # Required. JSON array or ref (see forms below).
+    concurrency: 5                                   # Optional. Max parallel iterations. Default 1.
+    task:                                            # Required. Exactly ONE nested task definition.
       task_key: process_item
       notebook_task:
         notebook_path: ../src/process_item.py
+        base_parameters:
+          item: "{{input}}"                          # Whole element. Use {{input.field}} for a field.
 ```
+
+**Nested task — exactly one.** `for_each_task.task` holds a single task, not a subgraph, and it
+**cannot** be another `for_each_task`. It may be any standard task type, including a
+`run_job_task` — to fan a *multi-step subgraph* out over a collection, make the nested task a
+`run_job_task` pointing at a child job that contains the subgraph (see `run_job_task` above for
+the concurrency/nesting rules that pattern requires).
+
+**Iteration reference.** Inside the nested task, `{{input}}` is the current element and
+`{{input.<key>}}` is a field of an object element. Use them in the nested task's parameter values
+(`notebook_task.base_parameters`, `run_job_task.job_parameters`, task `parameters`).
+
+**`inputs` forms and size limits** (all must be JSON-serializable — choose the transport by size):
+
+| Form | Max size |
+|---|---|
+| JSON-array literal, e.g. `'["a","b"]'` or `'[{"t":"x"}]'` | 5,000 characters |
+| Task-value ref `{{tasks.<key>.values.<name>}}` (array produced upstream) | 48 KiB |
+| Job-parameter ref `{{job.parameters.<name>}}` | 10,000 characters |
+
+**`concurrency`** defaults to **1** (sequential). Set it to restore parallel fan-out; when the
+body is a `run_job_task`, also raise the child job's `max_concurrent_runs` and enable its queue
+(see `run_job_task`).
+
+**No cross-iteration outputs.** A task outside the `for_each_task` can depend on the for-each task
+as a whole, but cannot read the individual iterations' task values. To consume per-iteration
+results downstream, have each iteration persist its result (e.g. write to a table/volume) and add
+a separate aggregation task that reads those **persisted** results — not the original input array.
 
 ---
 
@@ -565,4 +618,6 @@ Used within task parameter values using `{{}}` syntax:
 | `{{job.run_id}}` | Current run ID |
 | `{{job.start_time.iso_date}}` | Run start date (YYYY-MM-DD) |
 | `{{tasks.<key>.values.<name>}}` | Task value set by upstream task via `dbutils.jobs.taskValues.set()` |
+| `{{input}}` | Current element inside a `for_each_task` nested task |
+| `{{input.<key>}}` | A field of the current element (when iterating objects) |
 | `{{job.repair_count}}` | Number of repair attempts |
