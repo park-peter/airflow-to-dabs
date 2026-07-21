@@ -3,7 +3,7 @@
 # profile target (e.g. dev catalog/schema) out of another target's deployment.
 TARGET ?= dev
 
-.PHONY: setup manifest validate deploy run test
+.PHONY: setup manifest validate deploy run test task-count
 
 # Install the venv used by the PyDABs hook (databricks.yml -> python.venv_path).
 # Uses your default package index; pass a private index if you need one, e.g.
@@ -35,3 +35,11 @@ run:
 # end-to-end tests skip unless `make manifest` produced target/<TARGET>/manifest.json).
 test:
 	uv run pytest tests
+
+# Report how many tasks the generated dbt job would have, unbundled vs bundled,
+# against the 1,000-task per-job limit. Run after `make manifest`. If the unbundled
+# count is over WARN_THRESHOLD, set BUNDLE_TESTS = True in resources/<DAG_MODULE>_dbt_job.py.
+task-count:
+	@uv run python -c "from resources.<DAG_MODULE>_dbt_job import count_tasks, TASK_LIMIT, WARN_THRESHOLD; \
+u = count_tasks('$(TARGET)', bundle_tests=False); b = count_tasks('$(TARGET)', bundle_tests=True); \
+print(f'unbundled: {u} tasks  |  bundled: {b} tasks  |  warn>{WARN_THRESHOLD}  limit={TASK_LIMIT}')"

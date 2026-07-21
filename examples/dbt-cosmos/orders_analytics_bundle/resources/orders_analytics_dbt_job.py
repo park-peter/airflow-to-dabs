@@ -81,6 +81,20 @@ PROFILES_DIRECTORY = "dbt_profiles"
 # never be applied globally (it is invalid for `dbt test`).
 EXTRA_DBT_COMMAND_OPTIONS = ""
 
+# When True, a resource's single-model tests collapse into ONE `tests_<resource>`
+# task (dbt test --select <resource> --indirect-selection cautious) instead of one
+# task per test node; cross-model and zero-dep tests still get their own tasks.
+# Bundling is the main lever for the 1,000-task-per-job Lakeflow limit, but it
+# coarsens retry granularity (a model's tests rerun together, not individually).
+# The skill flips this to True only when the unbundled task count is over budget
+# (see TASK_LIMIT / WARN_THRESHOLD) and the user accepts the tradeoff.
+BUNDLE_TESTS = False
+
+# A single Databricks job holds at most TASK_LIMIT tasks. WARN_THRESHOLD leaves
+# headroom for the manifest to grow after migration before the hard cap is hit.
+TASK_LIMIT = 1000
+WARN_THRESHOLD = 900
+
 _BUNDLE_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -168,15 +182,24 @@ def _node_selector_matches(selector: str, fqn: list, is_versioned: bool) -> bool
     return bool(unscoped) and is_selected_node(unscoped, selector, is_versioned)
 
 
-def _assert_exact_selectors(manifest: dict) -> None:
+def _assert_exact_selectors(manifest: dict, *, bundle_tests: bool = BUNDLE_TESTS) -> None:
     """Every generated `--select fqn:<full fqn>` must resolve to exactly its own node
     among same-type nodes. Matching uses dbt's own is_selected_node (imported above)
     so this check cannot drift from runtime selector semantics. Requiring the matched
     set to equal {self} also rejects selectors that resolve to a single WRONG node
-    (e.g. a test named `[ab]` glob-matching only its sibling `a`)."""
+    (e.g. a test named `[ab]` glob-matching only its sibling `a`).
+
+    Under BUNDLE_TESTS, individual test nodes are not emitted as `fqn:` selectors — a
+    resource's single-model tests run via its `tests_<resource>` task (targeting the
+    resource, which is still exactness-checked here). Scanning test nodes then would
+    raise false positives on equal-FQN or shadowed tests that are never selected
+    individually, so test nodes are excluded from the scan in bundled mode."""
+    scanned_types = set(FACTORY_TYPES)
+    if bundle_tests:
+        scanned_types.discard("test")
     nodes_by_type: dict[str, list[tuple[str, list, bool]]] = {}
     for key, node in manifest.get("nodes", {}).items():
-        if node.get("resource_type") in FACTORY_TYPES:
+        if node.get("resource_type") in scanned_types:
             nodes_by_type.setdefault(node["resource_type"], []).append(
                 (key, node["fqn"], node.get("version") is not None)
             )
@@ -240,7 +263,15 @@ def _qualify_selectors(tasks: list[dict], manifest: dict) -> list[dict]:
     Rewrite every selector to the node's full FQN (exactness asserted by
     _assert_exact_selectors), and pin test commands to direct selection with
     `--indirect-selection empty` so a test FQN coinciding with a model FQN cannot
-    pull in the model's attached tests."""
+    pull in the model's attached tests.
+
+    Bundled `tests_<resource>` tasks (emitted only when BUNDLE_TESTS is True) are keyed
+    `tests_<resource task key>`, outside info_by_key. 0.2.1 builds their select as
+    `<package>.<name>`, which under dbt's positional FQN matching misses any model in a
+    subdirectory (`models/staging/...`) — it resolves to zero nodes, so the task would
+    silently run zero tests. Rewrite that select to the resource's full FQN so it
+    resolves, while KEEPING `--indirect-selection cautious` (never `empty`, which would
+    select the resource but run none of its tests)."""
     info_by_key: dict[str, tuple[str, str, str]] = {}
     for full_name, node in manifest.get("nodes", {}).items():
         if node.get("resource_type") in FACTORY_TYPES:
@@ -261,22 +292,30 @@ def _qualify_selectors(tasks: list[dict], manifest: dict) -> list[dict]:
                 command += " --indirect-selection empty"
         return command
 
-    for task in tasks:
-        info = info_by_key.get(task["task_key"])
-        if not info:
-            continue
-        bare, fqn, rtype = info
+    def rewrite_bundled(command: str, fqn: str) -> str:
+        # Replace the whole select token (0.2.1's `<package>.<name>`) with the resource's
+        # full FQN; leave --indirect-selection cautious untouched so attached tests run.
+        return re.sub(r"--select\s+\S+", f"--select fqn:{fqn}", command, count=1)
+
+    def apply_to_commands(task: dict, fn) -> None:
         if "notebook_task" in task:
             params = task["notebook_task"].get("base_parameters", {})
             if "dbt_commands" in params:
                 commands = json.loads(params["dbt_commands"])
-                params["dbt_commands"] = json.dumps(
-                    [rewrite(c, bare, fqn, rtype) for c in commands]
-                )
+                params["dbt_commands"] = json.dumps([fn(c) for c in commands])
         elif "dbt_task" in task:
-            task["dbt_task"]["commands"] = [
-                rewrite(c, bare, fqn, rtype) for c in task["dbt_task"]["commands"]
-            ]
+            task["dbt_task"]["commands"] = [fn(c) for c in task["dbt_task"]["commands"]]
+
+    for task in tasks:
+        key = task["task_key"]
+        info = info_by_key.get(key)
+        if info is not None:
+            bare, fqn, rtype = info
+            apply_to_commands(task, lambda c, bare=bare, fqn=fqn, rtype=rtype: rewrite(c, bare, fqn, rtype))
+        elif key.startswith("tests_"):
+            resource_info = info_by_key.get(key[len("tests_") :])
+            if resource_info is not None:
+                apply_to_commands(task, lambda c, fqn=resource_info[1]: rewrite_bundled(c, fqn))
     return tasks
 
 
@@ -295,6 +334,32 @@ def _prune_dangling_deps(tasks: list[dict]) -> list[dict]:
     return tasks
 
 
+def _assert_within_task_limit(tasks: list[dict]) -> None:
+    """A single Databricks job holds at most TASK_LIMIT tasks. Fail closed at deploy
+    time with an actionable message rather than let the Jobs API reject the job with a
+    cryptic error — the manifest can grow past the limit after migration, and the hook
+    cannot prompt. Enabling BUNDLE_TESTS is the first lever; see MIGRATION_NOTES."""
+    if len(tasks) > TASK_LIMIT:
+        hint = (
+            "split the project by dbt tag into multiple factory jobs, or fall back to a "
+            "single dbt_task"
+            if BUNDLE_TESTS
+            else "set BUNDLE_TESTS = True to collapse each resource's tests into one task"
+        )
+        raise RuntimeError(
+            f"The generated dbt job has {len(tasks)} tasks, over the {TASK_LIMIT}-task "
+            f"limit for a single Databricks job. To fit within the limit, {hint}."
+        )
+
+
+def count_tasks(target: str, *, bundle_tests: bool) -> int:
+    """Number of tasks the factory would emit for `target` in the given test mode,
+    computed from the manifest without deploying. Used by `make task-count` so the
+    unbundled vs bundled counts can be compared against TASK_LIMIT before choosing
+    BUNDLE_TESTS."""
+    return len(_build_tasks(target, bundle_tests=bundle_tests, enforce_limit=False))
+
+
 def _carries_vars_flag(args: list[str]) -> bool:
     """True if a tokenized dbt command carries its own --vars. dbt (see
     dbt/cli/params.py) exposes one spelling with no short alias and no env var,
@@ -303,8 +368,13 @@ def _carries_vars_flag(args: list[str]) -> bool:
     return any(a == "--vars" or a.startswith("--vars=") for a in args)
 
 
-def _build_tasks(target: str) -> list[dict]:
-    """Reads the dbt manifest and returns one Databricks task dict per dbt node."""
+def _build_tasks(
+    target: str, *, bundle_tests: bool = BUNDLE_TESTS, enforce_limit: bool = True
+) -> list[dict]:
+    """Reads the dbt manifest and returns one Databricks task dict per dbt node.
+    `bundle_tests` defaults to the module constant; count_tasks overrides it to size
+    the other mode. `enforce_limit` is False only for that sizing (the guard applies
+    to the mode actually deployed)."""
     resolver = DbtDependencyResolver()
     task_options = DbtTaskOptions(
         environment_key=ENVIRONMENT_KEY,
@@ -334,15 +404,16 @@ def _build_tasks(target: str) -> list[dict]:
         for node_type in FACTORY_TYPES
     }
 
-    # Bundled-test mode (bundle_tests=True) is not supported: 0.2.1 builds its
-    # bundled selectors differently and they cannot be rewritten to exact form.
-    factory = DbtFactory(SpecsHandler(), task_factories, bundle_tests=False)
+    factory = DbtFactory(SpecsHandler(), task_factories, bundle_tests=bundle_tests)
     manifest = SpecsHandler.read_dbt_manifest(str(_BUNDLE_ROOT / _manifest_path(target)))
     _fail_closed_checks(manifest)
-    _assert_exact_selectors(manifest)
+    _assert_exact_selectors(manifest, bundle_tests=bundle_tests)
     tasks = factory.create_tasks(manifest)
     _assert_unique_task_keys(tasks)
-    return _prune_dangling_deps(_qualify_selectors(tasks, manifest))
+    tasks = _prune_dangling_deps(_qualify_selectors(tasks, manifest))
+    if enforce_limit:
+        _assert_within_task_limit(tasks)
+    return tasks
 
 
 def build_job(target: str) -> Job:

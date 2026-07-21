@@ -788,11 +788,12 @@ def _build_tasks(target: str) -> list[dict]:
     classes = {"model": ModelTaskFactory, "snapshot": SnapshotTaskFactory,
                "seed": SeedTaskFactory, "test": TestTaskFactory}
     factories = {t: classes[t](resolver, options, f"--target {target}") for t in FACTORY_TYPES}
-    factory = DbtFactory(SpecsHandler(), factories, bundle_tests=False)
+    factory = DbtFactory(SpecsHandler(), factories, bundle_tests=BUNDLE_TESTS)  # True collapses tests per resource
     manifest = SpecsHandler.read_dbt_manifest(f"target/{target}/manifest.json")  # per-target
     _fail_closed_checks(manifest)              # unit tests -> error (0.2.1 drops them)
-    _assert_exact_selectors(manifest)          # each selector must resolve to its own node (dbt's matcher)
+    _assert_exact_selectors(manifest, bundle_tests=BUNDLE_TESTS)  # each selector -> its own node (dbt's matcher); skips tests when bundling
     tasks = factory.create_tasks(manifest)
+    # ... _qualify_selectors / _prune_dangling_deps, then _assert_within_task_limit (1,000-task cap)
     _assert_unique_task_keys(tasks)            # sanitized-key collisions -> error
     return _prune_dangling_deps(_qualify_selectors(tasks, manifest))  # fqn: + tests --indirect-selection empty
 
