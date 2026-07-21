@@ -166,6 +166,30 @@ def test_exact_selectors_allow_versioned_pair():
     glue._assert_exact_selectors(m)  # versioned models are distinguishable
 
 
+def test_exact_selectors_bundled_skips_equal_fqn_tests():
+    # Equal-FQN tests would fail the per-test exactness scan, but in bundled mode they
+    # are never emitted as individual fqn: selectors — they run via tests_<resource>.
+    m = _manifest(
+        {
+            "test.p.dup": _test("dup", ["p", "staging", "dup"]),
+            "test.other.dup": _test("dup", ["p", "staging", "dup"]),
+        }
+    )
+    glue._assert_exact_selectors(m, bundle_tests=True)  # no raise: test nodes excluded
+
+
+def test_exact_selectors_bundled_still_catches_model_collision():
+    # Bundling excludes only test nodes; model/seed/snapshot selectors are still checked.
+    m = _manifest(
+        {
+            "model.p.marts": _model("marts", ["p", "marts"]),
+            "model.p.marts.fct": _model("fct", ["p", "marts", "fct"]),
+        }
+    )
+    with pytest.raises(RuntimeError, match="not exact"):
+        glue._assert_exact_selectors(m, bundle_tests=True)
+
+
 # --------------------------------------------------------------------------------------
 # _assert_unique_task_keys — distinct node names can sanitize to one task key
 # --------------------------------------------------------------------------------------
@@ -237,6 +261,46 @@ def test_qualify_replaces_conflicting_indirect_selection():
     assert "cautious" not in cmd
 
 
+def test_qualify_rewrites_bundled_test_select_to_fqn_keeps_cautious():
+    # 0.2.1 emits the bundled select as <package>.<name> (`p.stg`), which misses a model
+    # in a subdirectory. _qualify_selectors must rewrite it to the resource's full FQN so
+    # it resolves, while KEEPING --indirect-selection cautious (empty would run 0 tests).
+    manifest = _manifest({"model.p.staging.stg": _model("stg", ["p", "staging", "stg"])})
+    resource_key = glue.generate_task_key("model.p.staging.stg")
+    bundled = _notebook_task(
+        f"tests_{resource_key}",
+        ["dbt test --select p.stg --indirect-selection cautious --target dev"],
+    )
+    (cmd,) = _commands_of(glue._qualify_selectors([bundled], manifest)[0])
+    assert "--select fqn:p.staging.stg" in cmd          # rewritten to full FQN
+    assert "--indirect-selection cautious" in cmd        # bundle selection preserved
+    assert "--indirect-selection empty" not in cmd
+    assert "--select p.stg " not in cmd                  # the bare package.name form is gone
+
+
+# --------------------------------------------------------------------------------------
+# _assert_within_task_limit — fail closed above the 1,000-task per-job cap
+# --------------------------------------------------------------------------------------
+
+def test_task_limit_passes_at_or_below_limit(monkeypatch):
+    monkeypatch.setattr(glue, "TASK_LIMIT", 3)
+    glue._assert_within_task_limit([{"task_key": f"t{i}"} for i in range(3)])  # no raise
+
+
+def test_task_limit_raises_above_limit_suggests_bundling(monkeypatch):
+    monkeypatch.setattr(glue, "TASK_LIMIT", 2)
+    monkeypatch.setattr(glue, "BUNDLE_TESTS", False)
+    with pytest.raises(RuntimeError, match="BUNDLE_TESTS = True"):
+        glue._assert_within_task_limit([{"task_key": f"t{i}"} for i in range(3)])
+
+
+def test_task_limit_raises_above_limit_when_already_bundled(monkeypatch):
+    monkeypatch.setattr(glue, "TASK_LIMIT", 2)
+    monkeypatch.setattr(glue, "BUNDLE_TESTS", True)
+    with pytest.raises(RuntimeError, match="split the project by dbt tag"):
+        glue._assert_within_task_limit([{"task_key": f"t{i}"} for i in range(3)])
+
+
 # --------------------------------------------------------------------------------------
 # Integration: drive the whole pipeline against the real manifest (skips if absent).
 # --------------------------------------------------------------------------------------
@@ -266,4 +330,74 @@ def test_build_tasks_end_to_end():
 def test_build_tasks_rejects_extra_vars(monkeypatch):
     monkeypatch.setattr(glue, "EXTRA_DBT_COMMAND_OPTIONS", "--vars '{a: 1}'")
     with pytest.raises(RuntimeError, match="--vars"):
+        glue._build_tasks("dev")
+
+
+@pytest.mark.skipif(
+    not (_BUNDLE_ROOT / "target" / "dev" / "manifest.json").exists(),
+    reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
+)
+def test_bundled_mode_collapses_tests_and_preserves_cautious():
+    # Only meaningful if the project has tests; assert the bundled shape when present.
+    tasks = glue._build_tasks("dev", bundle_tests=True)
+    for task in tasks:
+        if task["task_key"].startswith("tests_"):
+            for cmd in _commands_of(task):
+                if "dbt test" in cmd:
+                    assert "--indirect-selection cautious" in cmd   # bundle selection preserved
+                    assert "--indirect-selection empty" not in cmd  # not rewritten to empty
+
+
+@pytest.mark.skipif(
+    not (_BUNDLE_ROOT / "target" / "dev" / "manifest.json").exists(),
+    reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
+)
+def test_bundled_test_selectors_resolve_to_the_resource():
+    # The invariant that actually matters: each bundled `tests_<resource>` select must
+    # resolve to its resource under dbt's own matcher. 0.2.1's <package>.<name> form
+    # misses subdirectory models (0 nodes -> 0 tests run, silently); the fqn: rewrite
+    # must resolve. Uses the same matcher the glue's exactness check imports.
+    import re
+
+    manifest = glue.SpecsHandler.read_dbt_manifest(
+        str(_BUNDLE_ROOT / "target" / "dev" / "manifest.json")
+    )
+    resources = {  # resource full name (dotted fqn) -> is_versioned
+        ".".join(n["fqn"]): (n.get("version") is not None)
+        for n in manifest["nodes"].values()
+        if n["resource_type"] in ("model", "seed", "snapshot")
+    }
+    tasks = glue._build_tasks("dev", bundle_tests=True)
+    checked = 0
+    for task in (t for t in tasks if t["task_key"].startswith("tests_")):
+        for cmd in _commands_of(task):
+            m = re.search(r"--select\s+fqn:(\S+)", cmd)
+            assert m, f"bundled test select is not a resolvable fqn: selector: {cmd!r}"
+            selector = m.group(1)
+            assert any(
+                glue._node_selector_matches(selector, fqn.split("."), versioned)
+                for fqn, versioned in resources.items()
+            ), f"bundled selector {selector!r} matches no resource node"
+            checked += 1
+    assert checked, "no bundled test selectors were checked"
+
+
+@pytest.mark.skipif(
+    not (_BUNDLE_ROOT / "target" / "dev" / "manifest.json").exists(),
+    reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
+)
+def test_count_tasks_bundled_not_more_than_unbundled():
+    unbundled = glue.count_tasks("dev", bundle_tests=False)
+    bundled = glue.count_tasks("dev", bundle_tests=True)
+    assert bundled <= unbundled          # bundling never increases task count
+    assert unbundled >= 1
+
+
+@pytest.mark.skipif(
+    not (_BUNDLE_ROOT / "target" / "dev" / "manifest.json").exists(),
+    reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
+)
+def test_build_tasks_enforces_limit(monkeypatch):
+    monkeypatch.setattr(glue, "TASK_LIMIT", 1)
+    with pytest.raises(RuntimeError, match="over the 1-task limit"):
         glue._build_tasks("dev")
