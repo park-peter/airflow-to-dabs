@@ -48,6 +48,8 @@ Present a summary table before proceeding:
 
 Use the embedded mapping rules below as authoritative in Copilot (do not rely on external file references).
 
+**Source-aware classification (apply before the Tier tables).** Operator class alone does not fix the mapping — the connection does. Resolve `operator -> connection type -> operation intent -> data direction -> destination contract -> strategy`: Databricks SQL connection -> `sql_task`; remote federatable DB with read-only SELECT -> Lakehouse Federation `sql_task` over a foreign catalog; remote DML/DDL -> connector notebook or migrate the target to Delta; recurring source->Delta ingestion from an eligible source -> Lakeflow Connect ingestion pipeline (see dbt/Lakeflow Connect rules); files in cloud storage -> Auto Loader; unsupported source -> notebook/SDK + flag. Federatable sources: MySQL, PostgreSQL, SQL Server, Oracle, Teradata, Redshift, Snowflake, BigQuery, Synapse, Salesforce Data 360, Databricks (Athena/Trino/Presto are NOT federatable). **Fail-closed connection resolution**: auto-route only from operator/provider certainty, the actual sanitized Airflow `conn_type`, or an explicit user `conn_id -> {type, target}` mapping; a `conn_id` name/host is a hint only; unresolved connections are manual review; never inline credentials (use a UC connection or `dbutils.secrets`).
+
 #### Embedded operator mapping (authoritative)
 
 <!-- Snapshot of references/operator-mapping.md — keep in sync on updates -->
@@ -58,7 +60,8 @@ Use the embedded mapping rules below as authoritative in Copilot (do not rely on
 - `BashOperator` -> `spark_python_task` with a thin wrapper calling `subprocess.run(...)`, or `notebook_task` for trivial commands
 - `SparkSubmitOperator` -> `spark_python_task` or `spark_jar_task` (translate `spark-submit` args; remove YARN-only flags)
 - `DatabricksNotebookOperator` -> `notebook_task`
-- `DatabricksSqlOperator` / `DatabricksSQLStatementsOperator` / `SQLExecuteQueryOperator` -> `sql_task`
+- `DatabricksSqlOperator` / `DatabricksSQLStatementsOperator` -> `sql_task`
+- `SQLExecuteQueryOperator` / `PostgresOperator` / `MySqlOperator` -> `sql_task` **only for a Databricks SQL connection** (apply the source-aware classification above); a remote federatable DB read-only SELECT -> Lakehouse Federation `sql_task` over a foreign catalog; remote DML/DDL -> connector notebook or migrate target; unresolved connection -> flag (do not assume `sql_task`)
 - `DatabricksCopyIntoOperator` -> `sql_task` using `COPY INTO`
 - `DbtOperator` / `DbtRunOperator` / `DbtTestOperator` / `DbtSeedOperator` -> dbt factory mode (default) or single `dbt_task` (fallback — see dbt conversion rules below)
 - `TriggerDagRunOperator` -> `run_job_task` with `job_id: ${resources.jobs.<target>.id}` when target is in the same bundle

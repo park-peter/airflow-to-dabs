@@ -4,6 +4,50 @@ Authoritative reference for converting Apache Airflow operators to Databricks As
 
 ---
 
+## Source-aware classification (do this before the Tier tables)
+
+Operator **class** alone does not determine the DABs mapping — the **connection** does. A
+`PostgresOperator` against a Databricks SQL connection is a `sql_task`; the same operator against a
+remote Postgres is federation, a connector notebook, or Lakeflow Connect. Resolve each task in this
+order before applying a Tier mapping:
+
+`operator → connection type → operation intent → data direction → destination contract → strategy`
+
+**Routing table:**
+
+| Situation | Strategy |
+|---|---|
+| Databricks connection + Databricks SQL | `sql_task` (the Tier-1 default) |
+| Remote DB, **read-only SELECT**, source is a **federatable** engine | Lakehouse Federation: `sql_task` over a foreign catalog (or a connector notebook) |
+| Remote **DML/DDL/COPY/CALL** | Keep remote via a connector/API notebook, or migrate the target to Delta |
+| **Recurring** source→Delta ingestion/replication, **eligible** source | **Lakeflow Connect** (see `references/lakeflow-connect.md`) — a decision point, not an auto-swap |
+| Files in cloud storage | **Auto Loader** (existing file path — NOT Lakeflow Connect) |
+| Unsupported source | notebook/wheel using the driver/SDK — **flag** |
+
+**Federation source list (verified):** MySQL, PostgreSQL, SQL Server, Oracle, Teradata, Redshift,
+Snowflake, BigQuery, Synapse, Salesforce Data 360, Databricks. **Athena, Trino, Presto are NOT
+federatable** — route those through JDBC/SDK/connector notebooks.
+
+**Connection resolution is fail-closed.** A DAG usually contains only an arbitrary `conn_id` string,
+not the connection *type*. Automatic routing is allowed **only** from one of: (a) **operator/provider
+certainty** — the operator class fixes the engine (`PostgresOperator`→postgres,
+`SnowflakeSqlApiOperator`→snowflake); (b) the **actual sanitized Airflow `conn_type`** when the
+connection definition is available; or (c) an **explicit user-provided `conn_id → {type, target}`
+mapping**. A `conn_id` name or host string is a **hint only** — surface it as a suggestion in
+`MIGRATION_NOTES.md`, but do not let it drive automatic routing. Anything unresolved is **manual
+review**. **Never export or inline credentials** — auth becomes a UC connection (federation/Connect)
+or `dbutils.secrets` (connector notebook), created out-of-band.
+
+**Lakeflow Connect eligibility** (all must hold, else flag): recurring ingestion/replication; a
+connector exists for the source; **Connect can create and own the destination streaming table** (it
+fails if the destination already exists — an existing target needs a new landing table + downstream
+merge/cutover); source objects/columns/cursor/keys/deletion-handling representable; no intermediate
+file that is itself an external contract; required UC connection + networking known; the connector's
+release state is acceptable — and for a **Private Preview** connector, **confirmed workspace
+enrollment/entitlement**, not just user acceptance. Full rules in `references/lakeflow-connect.md`.
+
+---
+
 ## Tier 1: Direct 1:1 Mappings
 
 These operators have clear, deterministic equivalents in DABs.
@@ -478,9 +522,19 @@ COPY_OPTIONS ('force' = 'true')
 
 ### SQLExecuteQueryOperator / PostgresOperator / MySqlOperator
 
-**DABs task type:** `sql_task`
+**DABs task type:** `sql_task` — **but only when the connection targets Databricks SQL.** Apply the
+Source-aware classification step above first; the operator class does not decide this on its own.
 
-If SQL is inline, extract it to a `.sql` file and reference via `sql_task.file.path`. If it references an existing Databricks SQL query, use `sql_task.query.query_id`. Requires a `warehouse_id`.
+- **Databricks SQL connection** → `sql_task` (the mapping shown below). If SQL is inline, extract it to a
+  `.sql` file and reference via `sql_task.file.path`; if it references an existing Databricks SQL query,
+  use `sql_task.query.query_id`. Requires a `warehouse_id`.
+- **Remote DB connection, read-only SELECT, federatable engine** → run the SQL as a `sql_task` over a
+  **Lakehouse Federation foreign catalog** (auth via a UC connection), or a connector notebook.
+- **Remote DB connection, DML/DDL** → keep it remote via a connector/API notebook, or migrate the target
+  to Delta and rewrite the SQL for Databricks.
+- **Recurring remote-DB→Delta load** → consider **Lakeflow Connect** (see `references/lakeflow-connect.md`).
+- **Connection unresolved** (only a `conn_id` string, no `conn_type`) → **flag for manual review**; do not
+  assume `sql_task`.
 
 **Airflow:**
 

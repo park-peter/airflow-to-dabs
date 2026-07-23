@@ -49,6 +49,8 @@ Present a summary table before proceeding:
 
 Read `references/operator-mapping.md` in this skill's directory for the authoritative mapping table.
 
+**Source-aware classification (before the Tier tables).** Operator class alone does not fix the mapping — the connection does. Resolve `operator → connection type → intent → direction → destination → strategy`: Databricks SQL conn → `sql_task`; remote federatable DB read-only SELECT → Lakehouse Federation over a foreign catalog; remote DML/DDL → connector notebook or migrate target; recurring source→Delta ingestion (eligible source) → **Lakeflow Connect** (`references/lakeflow-connect.md`); cloud-storage files → Auto Loader; unsupported source → notebook/SDK + flag. **Fail-closed connection resolution**: auto-route only from operator/provider certainty, actual sanitized `conn_type`, or explicit user mapping — a `conn_id` name/host is a hint only; unresolved → manual review; never inline credentials. Athena/Trino/Presto are NOT federatable.
+
 For each task:
 
 1. **Tier 1 (direct)**: Apply the 1:1 mapping. Copy field values to DABs YAML fields.
