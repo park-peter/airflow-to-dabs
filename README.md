@@ -17,6 +17,9 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 
 - Parses Airflow DAG files to extract tasks, dependencies, operators, schedules, and parameters
 - Maps **40+ Airflow operator types** (including all [Databricks provider operators](https://airflow.apache.org/docs/apache-airflow-providers-databricks/stable/operators/index.html)) to DABs task type equivalents using a [tiered mapping system](references/operator-mapping.md)
+- **Source-aware routing**: maps by connection, not class alone (`operator → connection → intent → direction → destination → strategy`) — Databricks SQL → `sql_task`, remote federatable DB → Lakehouse Federation, recurring ingestion → Lakeflow Connect; fail-closed on unresolved connections
+- **Lakeflow Connect ingestion**: routes recurring source→Delta ingestion (CDC, query-based, and foreign-catalog incl. Snowflake→Delta) to a DABs managed-ingestion pipeline (see [`references/lakeflow-connect.md`](references/lakeflow-connect.md))
+- **Snowflake operators**: federation (read), query-based foreign-catalog ingestion (recurring copy), or connector notebook — by intent
 - Converts Airflow cron expressions and presets to Quartz cron format
 - Converts Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (`file_arrival`, `table_update`)
 - Extracts inline Python, SQL, and bash into standalone source files
@@ -275,6 +278,12 @@ Produces a two-job bundle: a YAML job for the non-dbt tasks with a `run_job_task
 
 Recognizes the `airflow.sdk` and `apache-airflow-providers-standard` imports, maps `.expand()` to a `for_each_task`, and turns a mapped task group (`@task_group.expand()`) into a `for_each_task` → `run_job_task` → child job holding the subgraph. See [`examples/dynamic-mapping/`](examples/dynamic-mapping/) for a complete conversion.
 
+### Convert a recurring ingestion DAG (Lakeflow Connect)
+
+> "Convert orders_replication_dag.py — it replicates a Snowflake table hourly"
+
+Routes recurring source→Delta ingestion to a Lakeflow Connect managed-ingestion pipeline (Snowflake via a UC foreign catalog, `ingest_from_uc_foreign_catalog`) with a `pipeline_task` hop into the downstream transform. See [`examples/lakeflow-connect/`](examples/lakeflow-connect/) for a complete conversion.
+
 ## Post-Generation Configuration
 
 The generated bundle uses placeholders for environment-specific values. Replace these before deploying, or provide the values in your prompt to skip this step (e.g., "use warehouse ID abc123 and spark version 15.4.x-scala2.12").
@@ -323,7 +332,8 @@ databricks bundle schema
 | [`references/dab-schema-reference.md`](references/dab-schema-reference.md) | Condensed DABs YAML schema — all task types, triggers, clusters, variables |
 | [`references/schedule-trigger-mapping.md`](references/schedule-trigger-mapping.md) | Cron conversion, sensor-to-trigger mapping, Airflow 3 Asset/`AssetOrTimeSchedule` scheduling, `default_args` mapping, Jinja variable conversion |
 | [`references/conversion-examples.md`](references/conversion-examples.md) | 6 complete before/after examples (ETL chain, branching, sensor-triggered, multi-system, cosmos dbt factory mode, Airflow 3 dynamic mapping + mapped task group) |
-| [`references/airflow3-migration.md`](references/airflow3-migration.md) | Airflow 3 recognition — `airflow.sdk` + `apache-airflow-providers-standard` imports, Assets vs Datasets, asset scheduling, removed operators, recognize→safe-map→flag checklist |
+| [`references/airflow3-migration.md`](references/airflow3-migration.md) | Airflow 3 recognition — `airflow.sdk` + `apache-airflow-providers-standard` imports, Assets vs Datasets, asset scheduling, deferrable/native-async/resumable execution model, removed operators, recognize→safe-map→flag checklist |
+| [`references/lakeflow-connect.md`](references/lakeflow-connect.md) | Lakeflow Connect ingestion target — when to use it vs a Jobs task, CDC/query-based/foreign-catalog styles (incl. Snowflake→Delta), eligibility, DABs generation contract, continuous-vs-triggered orchestration, MIGRATION_NOTES checklist |
 | [`references/hadoop-migration-guide.md`](references/hadoop-migration-guide.md) | HDFS path conversion, YARN config cleanup, Hive-to-UC mapping, spark-submit detection, Sqoop alternatives, bulk conversion guidance |
 | [`assets/templates/`](assets/templates/) | Skeleton `databricks.yml`, job resource, and dbt factory mode templates (PyDABs hook, pyproject, Makefile, profiles) |
 | [`AGENTS.md`](AGENTS.md) | Codex CLI instruction file (same workflow as SKILL.md) |
