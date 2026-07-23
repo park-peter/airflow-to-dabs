@@ -33,6 +33,58 @@ their import path is recognized.
 
 ---
 
+## Execution-model changes: deferrable, native async, and resumable
+
+Airflow 3's authoring surface is not only imports and scheduling — three execution-model constructs
+affect what you parse. None has a DABs "mode" switch; migrate the underlying operation.
+
+### Deferrable operators (a runtime optimization — ignore it)
+
+Deferrability is purely a worker-efficiency mechanism (release a worker slot while waiting via the
+triggerer); it does not change what the task does. Map the **underlying operation** normally and:
+
+- Drop `deferrable=True` / `*DeferrableOperator` suffixes, triggerer configuration, and `poke_interval`.
+- Keep task **timeout** and **retry** settings where they apply.
+- Generate **no polling** — Lakeflow owns waiting/queueing/triggers natively (sensors → job triggers).
+- Preserve **wait-for-completion** behavior **only** when Databricks submits to an external system via a
+  notebook/wheel and the original operator waited; `wait_for_completion=False` → submit and return.
+- `[operators] default_deferrable` only affects operators that support switching modes — it does not
+  change the mapping.
+
+Reference: https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/deferring.html
+
+### Native async TaskFlow (`@task` on `async def`) — Airflow 3.2.0
+
+Airflow **3.2.0** added native async TaskFlow tasks: `@task` decorating an `async def`, using `await`,
+`asyncio.gather`, and async hooks (`HttpAsyncHook`, `SFTPHookAsync`). This is **distinct from
+deferrable** — async tasks do many concurrent I/O ops within **one** worker slot on a shared event
+loop; deferrable frees the slot during a wait. Migration:
+
+- Map to a `notebook_task` / wheel task; keep the concurrent I/O **inside one task** by default.
+- The coroutine is **not runnable as-is** — rewrite Airflow async hooks and Connections to native async
+  clients (e.g. `aiohttp`, `asyncssh`) with auth from `dbutils.secrets`; the notebook drives the event
+  loop itself.
+- Optionally split independent `asyncio.gather()` items into a `for_each_task` — flag the changed retry
+  and UI granularity. There is no DABs "async" setting.
+
+Reference: https://airflow.apache.org/docs/task-sdk/stable/deferred-vs-async-operators.html
+
+### Resumable external jobs (`ResumableJobMixin`) — Airflow 3.3.0
+
+Airflow **3.3.0** added `ResumableJobMixin`: an operator persists the external job id before polling and,
+on retry, **reattaches** to the running external job instead of resubmitting (implementers provide
+`submit_job`, `get_job_status`, `is_job_active`, `is_job_succeeded`, `poll_until_complete`,
+`get_job_result`). Migration:
+
+- If the operation becomes a **native Databricks task**, drop the resumption mechanics.
+- If the **external job is retained**, preserve the external job id / idempotency / reattachment or
+  **flag** for review — never silently turn a resumable submission into a notebook that resubmits the
+  external job on every retry.
+
+Reference: https://airflow.apache.org/docs/task-sdk/stable/resumable-job-mixin.html
+
+---
+
 ## Task SDK import equivalence (`airflow.sdk`)
 
 Airflow 3 exposes the stable authoring interface under `airflow.sdk`. Map these to the same

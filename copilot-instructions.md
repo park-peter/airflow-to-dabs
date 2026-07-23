@@ -136,6 +136,9 @@ For schedule conversion:
 For Airflow 3 authoring surface (recognize -> safe-map -> flag):
 - Imports moved: `airflow.sdk` (`dag`, `task`, `task_group`, `Asset`, `BaseOperator`, `Variable`, `Connection`, `chain`) and `apache-airflow-providers-standard` (`airflow.providers.standard.operators.{python,bash,trigger_dagrun,...}`, `airflow.providers.standard.sensors.{external_task,filesystem,time,time_delta,...}`). Same operator mappings, different paths. Airflow 3.0–3.1 still accepts legacy `airflow.operators.*`/`airflow.sensors.*` with deprecation warnings — recognize both
 - `schedule_interval=` is removed (use `schedule=`); `SubDagOperator` is removed
+- **Deferrable operators**: ignore deferrability (a runtime optimization); map the underlying operation; drop `deferrable`/triggerer/`poke_interval`; keep timeout/retries; no polling. Preserve wait-for-completion only when Databricks submits to an external system via a notebook and the original waited (`wait_for_completion=False` -> submit and return)
+- **Native async TaskFlow** (Airflow 3.2.0, `@task` on `async def`, `await`, `asyncio.gather`, `HttpAsyncHook`/`SFTPHookAsync`): map to a notebook task, keep concurrent I/O in one task; rewrite Airflow async hooks/Connections to native async clients (`aiohttp`/`asyncssh`) + `dbutils.secrets` (not runnable as-is); optionally split independent `gather()` items into `for_each_task` (flag retry/UI change). No DABs async setting
+- **Resumable external jobs** (Airflow 3.3.0, `ResumableJobMixin`): if it becomes a native task, drop the resumption mechanics; if the external job is retained, preserve external job id/idempotency/reattachment or flag — never resubmit the external job on every retry
 - Flag (no clean mapping): the `@asset` decorator, `AssetWatcher`, asset aliases, DAG versioning/bundles, deadline alerts
 
 For Hadoop/on-prem migrations:
