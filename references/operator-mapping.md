@@ -577,6 +577,64 @@ GROUP BY date
 
 ---
 
+### Snowflake operators (snowflake provider)
+
+There is **no dedicated Snowflake managed connector** in Lakeflow Connect — Snowflake maps via
+**Lakehouse Federation** (read) and **query-based foreign-catalog ingestion** (recurring copy). Apply
+the Source-aware classification step; route by *intent*, not operator class.
+
+**Operator state (snowflake provider):** `SnowflakeOperator` was **removed in v6.0** (use
+`SQLExecuteQueryOperator` with a Snowflake connection); `S3ToSnowflakeOperator` was **removed in v5.0**
+(use `CopyFromExternalStageToSnowflakeOperator`). Current: `SnowflakeSqlApiOperator`,
+`Snowflake{Check,ValueCheck,IntervalCheck}Operator`, `CopyFromExternalStageToSnowflakeOperator`. The
+Snowpark TaskFlow decorator's **DAG syntax is `@task.snowpark`** (underlying API
+`airflow.providers.snowflake.decorators.snowpark.snowpark_task`) — **recognize both forms**.
+
+| Intent | Migration |
+|---|---|
+| Read-only Snowflake SQL | Databricks SQL over a Snowflake **foreign catalog** (federation) |
+| Read Snowflake, write Delta | CTAS / INSERT…SELECT via federation |
+| **Recurring** Snowflake→Delta copy | **query-based Lakeflow Connect via foreign catalog** (`ingest_from_uc_foreign_catalog`) — see `references/lakeflow-connect.md` |
+| Snowflake DML / DDL / `COPY` / `CALL` | keep remote via a connector/API notebook, or rewrite for Delta |
+| Snowflake checks (`Snowflake*CheckOperator`) | federation `sql_task` + `assert_true()` (see SQL checks below) |
+| External stage → Snowflake (`CopyFromExternalStageToSnowflakeOperator`) | preserve Snowflake `COPY`, or change the destination to Delta + Auto Loader / `COPY INTO` |
+| Snowpark (`@task.snowpark` / `snowpark_task`) | keep Snowpark remote from a notebook, or manually rewrite to PySpark/SQL (Snowpark ≠ PySpark) |
+
+**Federation toward Snowflake is read-only** — it cannot write Snowflake or run arbitrary Snowflake
+administration. Snowflake credentials become a **UC connection** (federation / foreign-catalog
+ingestion) or `dbutils.secrets` (a connector notebook using the Snowflake Python/Spark connector).
+
+---
+
+### SQL data-quality check operators
+
+**DABs task type:** `sql_task` (over the appropriate connection — Databricks SQL or a federated foreign
+catalog per the classification step)
+
+Common-SQL and provider check operators — `SQLColumnCheckOperator`, `SQLTableCheckOperator`,
+`SQLValueCheckOperator`, `SQLThresholdCheckOperator`, `SQLIntervalCheckOperator`, `SQLCheckOperator`,
+`Snowflake{Check,ValueCheck,IntervalCheck}Operator`, and the `@task.sql` decorator — map to a
+`sql_task` that uses **`assert_true(...)`** so a failed assertion fails the task (and the run).
+
+**`assert_true()` is only the failure mechanism, not the whole conversion.** Faithfully port the
+check's semantics or **flag** it: the comparison **tolerance**, `SQLIntervalCheckOperator`'s
+**interval ratios** and time window, any **partition/`WHERE`** clause, **null handling**, and
+**dynamic thresholds** (values computed from another query). If a check can't be expressed exactly in
+SQL, flag it in `MIGRATION_NOTES.md` rather than approximating.
+
+```sql
+-- SQLValueCheckOperator (row count within tolerance) ->
+SELECT assert_true(
+  abs((SELECT count(*) FROM silver.orders WHERE order_date = :run_date) - :expected) <= :tolerance
+)
+```
+
+`GenericTransfer` is not a check — route it by (source, destination) per the classification step:
+supported source→Delta (Connect / federation + CTAS / connector notebook), Delta→external
+(JDBC/connector write), external→external (preserve via an SDK/connector task).
+
+---
+
 ### TriggerDagRunOperator
 
 **DABs task type:** `run_job_task`
