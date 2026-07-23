@@ -1,0 +1,13 @@
+resources:
+  catalogs:
+    # Lakehouse Federation foreign catalog over the Snowflake connection.
+    # Requires bundle.engine: direct. The UC connection itself is NOT a bundle
+    # resource — create it out-of-band and reference it by name here.
+    snowflake_analytics:
+      name: ${var.snowflake_foreign_catalog}
+      connection_name: ${var.snowflake_connection}
+      options:
+        # Source-specific option (per CREATE FOREIGN CATALOG). A connection_name-only
+        # catalog can pass schema validation but fail at deploy.
+        database: ${var.snowflake_database}
+      comment: "Federated Snowflake analytics database (source for orders replication)."
