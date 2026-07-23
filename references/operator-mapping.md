@@ -1498,6 +1498,43 @@ if result.returncode != 0:
 
 ---
 
+### Cloud & messaging operator families
+
+These provider families have **no single 1:1 DABs task** — route each **by intent** via the
+Source-aware classification step, not by class name. The recurring strategies:
+
+- **Remote query** (a SELECT against an external warehouse/engine) → Lakehouse Federation `sql_task`
+  over a foreign catalog, **only for a federatable source** (MySQL, PostgreSQL, SQL Server, Oracle,
+  Teradata, Redshift, Snowflake, BigQuery, Synapse, Salesforce Data 360, Databricks). **Athena, Trino,
+  Presto are NOT federatable** → JDBC/SDK/connector notebook.
+- **Recurring source→Delta ingestion** (eligible source) → **Lakeflow Connect** (`references/lakeflow-connect.md`).
+- **Remote compute that Databricks replaces** (EMR/Dataproc Spark, external Spark SQL) → migrate the
+  workload to a `notebook_task` / `sql_task` / pipeline on Databricks.
+- **Remote orchestration retained** (trigger an external job that stays external) → a `notebook_task`
+  driving the cloud SDK (boto3 / google-cloud / azure-sdk), with auth via `dbutils.secrets` or a UC
+  connection; preserve wait-for-completion only if the operator waited.
+- **Kafka consumption → Delta** → the **Lakeflow Connect managed Kafka connector** (continuous) where
+  eligible, else Structured Streaming in a notebook/pipeline.
+- **Messaging side-effects** (publish to SNS/SQS/Kafka, post to Slack/PagerDuty) → a `notebook_task`
+  using the SDK/webhook.
+
+| Family | Representative operators | Typical route |
+|---|---|---|
+| **AWS** | `AthenaOperator`, `EmrAddStepsOperator`/`Emr*`, `GlueJobOperator`, `BatchOperator`, `LambdaInvokeFunctionOperator`, `RedshiftDataOperator`, `SageMaker*`, `SqsPublishOperator`, `SnsPublishOperator` | Athena→JDBC/SDK (not federatable); Redshift→federation; EMR/Glue/Batch/Lambda/SageMaker→SDK notebook (retain remote) or migrate compute; SQS/SNS→SDK notebook |
+| **GCP** | `BigQueryInsertJobOperator`, `DataprocSubmitJobOperator`, `DataflowTemplatedJobStartOperator`, Cloud Run/Functions, `PubSub*` | BigQuery→federation or Connect; Dataproc→migrate to Databricks compute; Dataflow/Cloud Run/Functions→SDK notebook; Pub/Sub→SDK notebook or streaming |
+| **Azure** | `AzureDataFactoryRunPipelineOperator`, `AzureSynapseRunSparkBatchOperator`, Batch, Service Bus, MS Graph | ADF/Synapse→SDK notebook (retain) or migrate; Service Bus→SDK notebook |
+| **HTTP / files** | `HttpOperator`, `SFTPOperator`/`FTPOperator` | HTTP→`notebook_task` w/ `requests` (or the External-Orchestration HTTP operator when GA); SFTP/FTP→notebook w/ `paramiko`/`ftplib`, staging to a UC volume |
+| **Other SQL engines** | `TrinoOperator`/`PrestoOperator` (deprecated), `OracleOperator`/`MsSqlOperator`/`JdbcOperator` (use `SQLExecuteQueryOperator`), `SparkSqlOperator` | Oracle/MSSQL→federation; Trino/Presto→JDBC/SDK (not federatable); SparkSql→`sql_task`/notebook |
+| **Kafka** | `ConsumeFromTopicOperator`/`ProduceToTopicOperator` | Consume→managed Kafka connector (continuous) or Structured Streaming; Produce→SDK notebook |
+
+**Import-path honesty:** state an operator's import path as exact **only** when verified against the
+provider docs; otherwise describe it by pattern (`airflow.providers.<provider>.operators.<module>`) and
+tell the reader to confirm the module path. Many of these become native one-to-one targets under
+Lakeflow's External Orchestration (Python operator task) as it reaches GA — until then, notebook/SDK
+with a note is the faithful mapping.
+
+---
+
 ## Tier 3: Sensor to Trigger Mappings
 
 Airflow sensors that wait for external conditions map to DABs job-level triggers.
