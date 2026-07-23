@@ -282,8 +282,10 @@ managed-ingestion pipeline — see below).
 
 A Lakeflow Connect ingestion pipeline is a `resources.pipelines.<name>` entry carrying an
 `ingestion_definition`. See `references/lakeflow-connect.md` for when to choose Connect over a Jobs
-task. A pipeline is **ingestion XOR declarative** — an `ingestion_definition` cannot be combined with
-the `libraries` / `schema` / `target` / `catalog` settings of a normal DLT pipeline.
+task. The schema's `ingestion_definition` description warns it should not be mixed with a normal DLT
+pipeline's `libraries` settings; note, however, that current query-based-ingestion examples do set
+`catalog`/`target` alongside `ingestion_definition` — follow the field combination in the current docs /
+`databricks bundle schema` for your CLI version rather than assuming a blanket incompatibility.
 
 **Combined ingestion (primary/canonical)** — one pipeline, `connection_name` on the ingestion
 definition (SaaS, files, query-based DB, and CDC via `connection_name`; add `connector_type` when the

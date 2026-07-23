@@ -13,7 +13,9 @@ A task is a Connect candidate only when **all** hold — otherwise map it to a J
 federation, Auto Loader) or flag it:
 
 - The operation is **recurring ingestion / replication** (not a one-shot backfill, not a transform).
-- A **managed connector exists** for the source (list below — verify current release state).
+- A **connector exists** for the source. The list below is **illustrative, not exhaustive** — the SaaS
+  connector set grows, and foreign-catalog ingestion covers **all Lakehouse Federation sources**.
+  Classify from the **current Databricks docs / connector metadata**, not this list alone.
 - **Connect can create and own the destination streaming table.** Ingestion into a table that already
   exists is not supported — an existing production target needs a new landing table + a downstream
   merge/cutover step, or a different strategy.
@@ -54,8 +56,11 @@ Pick the architecture by source and emit the matching resources (schema/examples
 
 - **Combined ingestion** (SaaS, files, query-based DB, CDC via `connection_name`): ONE
   `resources/<source>_ingestion.pipeline.yml` with `ingestion_definition` (+ `connector_type` when the
-  source supports both query-based and CDC). No gateway. `ingestion_definition` cannot be combined with
-  a normal pipeline's `libraries`/`schema`/`target`/`catalog`.
+  source supports both query-based and CDC). No gateway. The bundle schema's `ingestion_definition`
+  description historically warned it "cannot be used with the `libraries`/`schema`/`target`/`catalog`
+  settings," but current query-based-ingestion DAB examples do pair it with `catalog`/`target` — follow
+  the field combination in the current Databricks docs / `databricks bundle schema` for your CLI version
+  rather than treating it as a blanket ban.
 - **Gateway CDC** (log-based DB via a gateway — **Private Preview / `doNotSuggest`**): a **separate**
   gateway pipeline (`gateway_definition`) + an ingestion pipeline joined by `ingestion_gateway_id`.
   Only with connector-specific verification + confirmed Private-Preview enrollment; never the default.

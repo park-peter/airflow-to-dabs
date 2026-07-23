@@ -29,7 +29,7 @@ orders_replication_bundle/
 
 | Airflow | Lakeflow/DABs output | Notes |
 |---|---|---|
-| `SnowflakeSqlApiOperator` (recurring replication) | Lakeflow Connect **foreign-catalog** ingestion pipeline | No Snowflake managed connector — federated via `ingest_from_uc_foreign_catalog`. |
+| `replicate_orders` `@task` (incremental Snowflake→Delta transfer via `SnowflakeHook`, cursor `updated_at` + key `order_id`) | Lakeflow Connect **foreign-catalog** ingestion pipeline | No Snowflake managed connector — federated via `ingest_from_uc_foreign_catalog`; the cursor + key carry into `table_configuration`. |
 | `@task transform_orders` | `notebook_task` reading the replicated `raw_orders` | Standard TaskFlow → notebook. |
 | DAG dependency `replicate >> transform` | `pipeline_task` (triggered) → `notebook_task` | Triggered pipeline runs as a `pipeline_task`; continuous would use a downstream `trigger.table_update`. |
 

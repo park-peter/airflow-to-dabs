@@ -7,9 +7,10 @@ Authoritative reference for converting Apache Airflow operators to Databricks As
 ## Source-aware classification (do this before the Tier tables)
 
 Operator **class** alone does not determine the DABs mapping — the **connection** does. A
-`PostgresOperator` against a Databricks SQL connection is a `sql_task`; the same operator against a
-remote Postgres is federation, a connector notebook, or Lakeflow Connect. Resolve each task in this
-order before applying a Tier mapping:
+connection-agnostic `SQLExecuteQueryOperator` against a Databricks SQL connection is a `sql_task`; the
+same operator against a remote Postgres connection is federation, a connector notebook, or Lakeflow
+Connect. Provider-specific operators like `PostgresOperator` bind to their own database hook, so the
+operator fixes the remote engine. Resolve each task in this order before applying a Tier mapping:
 
 `operator → connection type → operation intent → data direction → destination contract → strategy`
 
@@ -520,10 +521,11 @@ COPY_OPTIONS ('force' = 'true')
 
 ---
 
-### SQLExecuteQueryOperator / PostgresOperator / MySqlOperator
+### SQLExecuteQueryOperator
 
-**DABs task type:** `sql_task` — **but only when the connection targets Databricks SQL.** Apply the
-Source-aware classification step above first; the operator class does not decide this on its own.
+`SQLExecuteQueryOperator` is connection-agnostic. Its **DABs task type is `sql_task` only when the
+resolved connection targets Databricks SQL**; otherwise apply the source-aware classification step
+above.
 
 - **Databricks SQL connection** → `sql_task` (the mapping shown below). If SQL is inline, extract it to a
   `.sql` file and reference via `sql_task.file.path`; if it references an existing Databricks SQL query,
@@ -535,6 +537,18 @@ Source-aware classification step above first; the operator class does not decide
 - **Recurring remote-DB→Delta load** → consider **Lakeflow Connect** (see `references/lakeflow-connect.md`).
 - **Connection unresolved** (only a `conn_id` string, no `conn_type`) → **flag for manual review**; do not
   assume `sql_task`.
+
+#### PostgresOperator / MySqlOperator
+
+Provider-specific operators bind to their database hooks, so `PostgresOperator` and `MySqlOperator`
+identify known remote PostgreSQL and MySQL engines respectively. Do not reinterpret either one as a
+Databricks SQL task based on its `conn_id` or connection metadata. Route by SQL intent:
+
+- **Read-only SELECT** → Lakehouse Federation over the corresponding foreign catalog, or a connector
+  notebook.
+- **Remote DML/DDL** → a connector/API notebook, or migrate the target to Delta and rewrite the SQL.
+- **Recurring source→Delta ingestion** → Lakeflow Connect when the source and destination contract meet
+  its eligibility rules.
 
 **Airflow:**
 
@@ -611,10 +625,15 @@ ingestion) or `dbutils.secrets` (a connector notebook using the Snowflake Python
 **DABs task type:** `sql_task` (over the appropriate connection — Databricks SQL or a federated foreign
 catalog per the classification step)
 
-Common-SQL and provider check operators — `SQLColumnCheckOperator`, `SQLTableCheckOperator`,
+Common-SQL and provider **check** operators — `SQLColumnCheckOperator`, `SQLTableCheckOperator`,
 `SQLValueCheckOperator`, `SQLThresholdCheckOperator`, `SQLIntervalCheckOperator`, `SQLCheckOperator`,
-`Snowflake{Check,ValueCheck,IntervalCheck}Operator`, and the `@task.sql` decorator — map to a
+`Snowflake{Check,ValueCheck,IntervalCheck}Operator` — assert a condition, so they map to a
 `sql_task` that uses **`assert_true(...)`** so a failed assertion fails the task (and the run).
+
+> **`@task.sql` is NOT a check.** It wraps `SQLExecuteQueryOperator` and can run any SELECT/DML/DDL and
+> return results — route it by connection and SQL intent (the source-aware classification step),
+> preserving or flagging any consumed output. Use `assert_true()` only when the task actually represents
+> an assertion, not for every `@task.sql`.
 
 **`assert_true()` is only the failure mechanism, not the whole conversion.** Faithfully port the
 check's semantics or **flag** it: the comparison **tolerance**, `SQLIntervalCheckOperator`'s

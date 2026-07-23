@@ -4,14 +4,16 @@
 
 Converted Airflow 3 DAG: `orders_replication`.
 
-A recurring Snowflake→lakehouse replication (`SnowflakeSqlApiOperator`) plus a downstream transform
-becomes a **two-resource** conversion: a **Lakeflow Connect ingestion pipeline** (Snowflake via a UC
-foreign catalog) and a **Lakeflow job** whose `pipeline_task` triggers it, followed by the transform.
+A recurring, incremental Snowflake→lakehouse replication (a `@task` reading Snowflake via `SnowflakeHook`
+with a cursor `updated_at` and primary key `order_id`, writing into `raw_orders`) plus a downstream
+transform becomes a **two-resource** conversion: a **Lakeflow Connect ingestion pipeline** (Snowflake via
+a UC foreign catalog, with the same cursor + key in `table_configuration`) and a **Lakeflow job** whose
+`pipeline_task` triggers it, followed by the transform.
 
 ## Why Lakeflow Connect (not a notebook)
 
-The source task is *recurring ingestion from a federatable source into Delta* — the classification-step
-signal for Lakeflow Connect. Snowflake has **no dedicated managed connector**, so it ingests via a
+The source task is *recurring incremental ingestion from a federatable source into Delta* — the
+classification-step signal for Lakeflow Connect. Snowflake has **no dedicated managed connector**, so it ingests via a
 **query-based foreign catalog** (`ingest_from_uc_foreign_catalog: true`), reading through a UC foreign
 catalog federated from a Snowflake connection.
 
