@@ -266,14 +266,101 @@ Runs a SQL query, SQL file, or refreshes a SQL alert/dashboard.
 
 ### pipeline_task
 
-Triggers a Lakeflow Declarative Pipeline update.
+Triggers a Lakeflow Declarative Pipeline update (a DLT/declarative pipeline, or a Lakeflow Connect
+managed-ingestion pipeline — see below).
 
 ```yaml
 - task_key: my_pipeline
   pipeline_task:
-    pipeline_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # Required.
+    pipeline_id: ${resources.pipelines.my_pipeline.id}   # Required. Bundle ref or pipeline ID.
     full_refresh: false                                    # Optional. Default false.
 ```
+
+---
+
+### Managed-ingestion pipelines (Lakeflow Connect)
+
+A Lakeflow Connect ingestion pipeline is a `resources.pipelines.<name>` entry carrying an
+`ingestion_definition`. See `references/lakeflow-connect.md` for when to choose Connect over a Jobs
+task. A pipeline is **ingestion XOR declarative** — an `ingestion_definition` cannot be combined with
+the `libraries` / `schema` / `target` / `catalog` settings of a normal DLT pipeline.
+
+**Combined ingestion (primary/canonical)** — one pipeline, `connection_name` on the ingestion
+definition (SaaS, files, query-based DB, and CDC via `connection_name`; add `connector_type` when the
+source supports both query-based and CDC):
+
+```yaml
+resources:
+  pipelines:
+    salesforce_ingest:
+      name: salesforce_ingest
+      ingestion_definition:
+        connection_name: ${var.salesforce_connection}   # UC connection (created out-of-band)
+        objects:
+          - table:
+              source_schema: salesforce
+              source_table: opportunity
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+```
+
+**Foreign-catalog ingestion (query-based, for federated sources — Snowflake/BigQuery/Redshift/Synapse)**
+— set `ingest_from_uc_foreign_catalog: true` and reference the source by `source_catalog/schema/table`
+(no `connection_name` / gateway on the ingestion definition):
+
+```yaml
+resources:
+  pipelines:
+    snowflake_ingest:
+      name: snowflake_ingest
+      ingestion_definition:
+        ingest_from_uc_foreign_catalog: true
+        objects:
+          - table:
+              source_catalog: ${var.snowflake_foreign_catalog}   # a UC foreign catalog (below)
+              source_schema: public
+              source_table: orders
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+```
+
+The **foreign catalog** is a bundle resource (`resources.catalogs`), created from a UC connection. It
+requires `bundle.engine: direct` — "defining catalogs is only supported if you are using the direct
+deployment engine." A foreign catalog needs `connection_name` **plus source-specific `options`** (e.g.
+`options: { database: '<db>' }` for Snowflake/PostgreSQL/Redshift per CREATE FOREIGN CATALOG); a
+`connection_name`-only catalog can pass schema validation but fail at deploy. **Reference an existing
+foreign catalog by default; only create one when the bundle should own it.**
+
+```yaml
+bundle:
+  name: snowflake-ingest
+  engine: direct                     # required to define catalogs in a bundle
+
+resources:
+  catalogs:
+    snowflake_fc:
+      name: ${var.snowflake_foreign_catalog}
+      connection_name: ${var.snowflake_connection}
+      options:
+        database: ${var.snowflake_database}   # source-specific; confirm required options per source
+```
+
+> **UC connections are NOT bundle resources.** Create the connection out-of-band (`CREATE CONNECTION`
+> / UI) and reference it by name. Record it as a prerequisite in `MIGRATION_NOTES.md` (name, auth,
+> networking).
+
+**Gateway CDC (Private Preview — requires enrollment).** Log-based CDC for a database source uses a
+**separate** `gateway_definition` pipeline plus an ingestion pipeline joined by `ingestion_gateway_id`
+(`gateway_definition` and `ingestion_definition` are never on the same pipeline). The bundle schema
+marks `gateway_definition` `[Private Preview]` / `doNotSuggest` — generate this path **only** with
+connector-specific verification and confirmed workspace Private-Preview enrollment; it is not the
+default. Prefer combined CDC (`connection_name` + `connector_type`) where the connector supports it.
+
+**Orchestration.** A **triggered** ingestion pipeline is driven by a `pipeline_task` at the original
+dependency position. A **continuous** pipeline (streaming connectors like Kafka/RabbitMQ, or any
+connector documented continuous-only) is not `pipeline_task`-driven — run it standalone and have the
+downstream job depend on a job-level `trigger.table_update` on its destination table. Run mode is
+per-connector; confirm it, don't assume.
 
 ---
 

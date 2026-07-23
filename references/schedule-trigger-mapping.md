@@ -163,6 +163,12 @@ trigger:
     wait_after_last_change_seconds: 60
 ```
 
+> **Continuous Lakeflow Connect pipelines** (streaming connectors like Kafka/RabbitMQ, or any connector
+> documented continuous-only) are **not** driven by a `pipeline_task` hop. Run the pipeline standalone
+> and have the downstream job depend on a job-level `trigger.table_update` on the pipeline's destination
+> table — the same mechanism above. A **triggered** ingestion pipeline uses a `pipeline_task` instead.
+> See `references/lakeflow-connect.md`.
+
 ---
 
 ### Dependency-Based Sensors -> `depends_on` or `run_job_task`
