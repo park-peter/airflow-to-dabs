@@ -11,6 +11,7 @@ Run with: uv run pytest tests
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -65,33 +66,6 @@ def _manifest(nodes, unit_tests=None):
 )
 def test_carries_vars_flag(argv, expected):
     assert glue._carries_vars_flag(argv) is expected
-
-
-# --------------------------------------------------------------------------------------
-# _fail_closed_checks — unit tests dropped by databricks-dbt-factory 0.2.1
-# --------------------------------------------------------------------------------------
-
-def test_fail_closed_passes_without_unit_tests():
-    m = _manifest({"model.p.a": _model("a", ["p", "a"])})
-    glue._fail_closed_checks(m)  # no raise
-
-
-def test_fail_closed_rejects_unit_tests_when_test_factory_enabled():
-    m = _manifest(
-        {"model.p.a": _model("a", ["p", "a"])},
-        unit_tests={"unit_test.p.a.ut": {}},
-    )
-    with pytest.raises(RuntimeError, match="unit test"):
-        glue._fail_closed_checks(m)
-
-
-def test_fail_closed_allows_unit_tests_when_test_factory_disabled(monkeypatch):
-    monkeypatch.setattr(glue, "FACTORY_TYPES", ["model"])
-    m = _manifest(
-        {"model.p.a": _model("a", ["p", "a"])},
-        unit_tests={"unit_test.p.a.ut": {}},
-    )
-    glue._fail_closed_checks(m)  # no raise: test factory is off
 
 
 # --------------------------------------------------------------------------------------
@@ -191,7 +165,8 @@ def test_exact_selectors_bundled_still_catches_model_collision():
 
 
 # --------------------------------------------------------------------------------------
-# _assert_unique_task_keys — distinct node names can sanitize to one task key
+# _assert_unique_task_keys — belt-and-suspenders: 0.3.1 guarantees unique keys, so this
+# only trips on a factory regression that emits two tasks with the same key.
 # --------------------------------------------------------------------------------------
 
 def test_unique_task_keys_pass():
@@ -201,7 +176,7 @@ def test_unique_task_keys_pass():
 def test_unique_task_keys_reject_collision():
     with pytest.raises(RuntimeError, match="collide"):
         glue._assert_unique_task_keys(
-            [{"task_key": "model_foo_bar_baz"}, {"task_key": "model_foo_bar_baz"}]
+            [{"task_key": "orders_model"}, {"task_key": "orders_model"}]
         )
 
 
@@ -221,7 +196,7 @@ def test_prune_removes_dangling_and_keeps_valid():
 
 
 # --------------------------------------------------------------------------------------
-# _qualify_selectors — bare names rewritten to fqn:, test commands pinned direct-only
+# Task-dict helpers, shared by the integration tests below.
 # --------------------------------------------------------------------------------------
 
 def _notebook_task(task_key, commands):
@@ -233,49 +208,6 @@ def _notebook_task(task_key, commands):
 
 def _commands_of(task):
     return json.loads(task["notebook_task"]["base_parameters"]["dbt_commands"])
-
-
-def test_qualify_rewrites_model_selector_to_fqn():
-    manifest = _manifest({"model.p.staging.stg": _model("stg", ["p", "staging", "stg"])})
-    key = glue.generate_task_key("model.p.staging.stg")
-    tasks = [_notebook_task(key, ["dbt run --select stg --target dev"])]
-    out = _commands_of(glue._qualify_selectors(tasks, manifest)[0])
-    assert out == ["dbt run --select fqn:p.staging.stg --target dev"]
-
-
-def test_qualify_pins_test_to_indirect_selection_empty():
-    manifest = _manifest({"test.p.staging.t": _test("t", ["p", "staging", "t"])})
-    key = glue.generate_task_key("test.p.staging.t")
-    tasks = [_notebook_task(key, ["dbt test --select t --target dev"])]
-    (cmd,) = _commands_of(glue._qualify_selectors(tasks, manifest)[0])
-    assert "--select fqn:p.staging.t" in cmd
-    assert "--indirect-selection empty" in cmd
-
-
-def test_qualify_replaces_conflicting_indirect_selection():
-    manifest = _manifest({"test.p.staging.t": _test("t", ["p", "staging", "t"])})
-    key = glue.generate_task_key("test.p.staging.t")
-    tasks = [_notebook_task(key, ["dbt test --select t --indirect-selection=cautious"])]
-    (cmd,) = _commands_of(glue._qualify_selectors(tasks, manifest)[0])
-    assert "--indirect-selection empty" in cmd
-    assert "cautious" not in cmd
-
-
-def test_qualify_rewrites_bundled_test_select_to_fqn_keeps_cautious():
-    # 0.2.1 emits the bundled select as <package>.<name> (`p.stg`), which misses a model
-    # in a subdirectory. _qualify_selectors must rewrite it to the resource's full FQN so
-    # it resolves, while KEEPING --indirect-selection cautious (empty would run 0 tests).
-    manifest = _manifest({"model.p.staging.stg": _model("stg", ["p", "staging", "stg"])})
-    resource_key = glue.generate_task_key("model.p.staging.stg")
-    bundled = _notebook_task(
-        f"tests_{resource_key}",
-        ["dbt test --select p.stg --indirect-selection cautious --target dev"],
-    )
-    (cmd,) = _commands_of(glue._qualify_selectors([bundled], manifest)[0])
-    assert "--select fqn:p.staging.stg" in cmd          # rewritten to full FQN
-    assert "--indirect-selection cautious" in cmd        # bundle selection preserved
-    assert "--indirect-selection empty" not in cmd
-    assert "--select p.stg " not in cmd                  # the bare package.name form is gone
 
 
 # --------------------------------------------------------------------------------------
@@ -319,7 +251,9 @@ def test_build_tasks_end_to_end():
             assert dep["task_key"] in keys       # no dangling deps
         for cmd in _commands_of(task):
             if "--select" in cmd:
-                assert "--select fqn:orders_analytics." in cmd   # every selector qualified
+                # 0.3.1 selects by full dot-joined FQN (no `fqn:` prefix); the package
+                # segment is always present, so a bare-name selector would have no dot.
+                assert re.search(r"--select\s+orders_analytics\.\S+", cmd)
                 assert "--vars" not in cmd                        # no command-level vars
 
 
@@ -338,14 +272,18 @@ def test_build_tasks_rejects_extra_vars(monkeypatch):
     reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
 )
 def test_bundled_mode_collapses_tests_and_preserves_cautious():
+    # Bundled test tasks are the `dbt test ... --indirect-selection cautious` commands
+    # (0.3.1 keys them `<resource>_test`; match on the command, not the key name).
     tasks = glue._build_tasks("dev", bundle_tests=True)
-    bundled = [t for t in tasks if t["task_key"].startswith("tests_")]
-    assert bundled, "expected at least one tests_<resource> task in bundled mode"
-    for task in bundled:
-        for cmd in _commands_of(task):
-            if "dbt test" in cmd:
-                assert "--indirect-selection cautious" in cmd   # bundle selection preserved
-                assert "--indirect-selection empty" not in cmd  # not rewritten to empty
+    bundled = [
+        c
+        for t in tasks
+        for c in _commands_of(t)
+        if "dbt test" in c and "--indirect-selection cautious" in c
+    ]
+    assert bundled, "expected at least one bundled test task in bundled mode"
+    for cmd in bundled:
+        assert "--indirect-selection empty" not in cmd  # bundle selection not narrowed
 
 
 @pytest.mark.skipif(
@@ -353,13 +291,13 @@ def test_bundled_mode_collapses_tests_and_preserves_cautious():
     reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
 )
 def test_bundled_test_selectors_resolve_to_the_resource():
-    # The invariant that actually matters: each bundled `tests_<resource>` select must
-    # resolve to its resource under dbt's own matcher. 0.2.1's <package>.<name> form
-    # misses subdirectory models (0 nodes -> 0 tests run, silently); the fqn: rewrite
-    # must resolve. Uses the same matcher the glue's exactness check imports.
-    import re
-
-    manifest = glue.SpecsHandler.read_dbt_manifest(
+    # The invariant that actually matters: each bundled test task's select must resolve
+    # to its resource under dbt's own matcher. databricks-dbt-factory 0.3.1 selects by
+    # the resource's full dot-joined FQN (with --indirect-selection cautious, which sweeps
+    # in that resource's tests); confirm it resolves using the same matcher the glue's
+    # exactness check imports. Bundled test tasks are matched by their cautious command,
+    # not a task-key prefix (0.3.1 keys them `<resource>_test`).
+    manifest = glue.read_dbt_manifest(
         str(_BUNDLE_ROOT / "target" / "dev" / "manifest.json")
     )
     resources = {  # resource full name (dotted fqn) -> is_versioned
@@ -369,10 +307,12 @@ def test_bundled_test_selectors_resolve_to_the_resource():
     }
     tasks = glue._build_tasks("dev", bundle_tests=True)
     checked = 0
-    for task in (t for t in tasks if t["task_key"].startswith("tests_")):
+    for task in tasks:
         for cmd in _commands_of(task):
-            m = re.search(r"--select\s+fqn:(\S+)", cmd)
-            assert m, f"bundled test select is not a resolvable fqn: selector: {cmd!r}"
+            if "dbt test" not in cmd or "--indirect-selection cautious" not in cmd:
+                continue
+            m = re.search(r"--select\s+(\S+)", cmd)
+            assert m, f"bundled test command has no --select: {cmd!r}"
             selector = m.group(1)
             assert any(
                 glue._node_selector_matches(selector, fqn.split("."), versioned)

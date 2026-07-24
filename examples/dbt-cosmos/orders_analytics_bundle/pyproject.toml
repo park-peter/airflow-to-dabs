@@ -12,7 +12,7 @@ dev = [
     # PyDABs runtime for the python.resources hook; pair with a compatible Databricks CLI.
     "databricks-bundles>=1.0.0,<2.0.0",
     # Generates one Databricks task per dbt node from the manifest.
-    "databricks-dbt-factory==0.2.1",
+    "databricks-dbt-factory==0.3.1",
     # Exact dbt pins give dbt version/runtime parity across machines and with the
     # serverless base environment (no lockfile is committed, so transitive deps are
     # not locked). dbt-core is pinned because the selector-exactness check imports it.
