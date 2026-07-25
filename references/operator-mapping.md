@@ -49,6 +49,27 @@ enrollment/entitlement**, not just user acceptance. Full rules in `references/la
 
 ---
 
+## Deferrable operators and sensors (any Airflow version)
+
+Applies across all tiers and to **any Airflow version** — deferrability has existed since Airflow 2.2
+(`deferrable=True`, `*DeferrableOperator` variants, `mode="reschedule"` sensors, the triggerer). It is a
+worker-efficiency mechanism (release a worker slot while waiting) and does **not** change what the task
+does, so **ignore the deferrability and map the underlying operation normally**:
+
+- Drop `deferrable=True` / the `*DeferrableOperator` suffix, triggerer configuration, and `poke_interval`.
+- Keep task **timeout** and **retry** settings where they apply.
+- Generate **no polling** — Lakeflow owns waiting/queueing/triggers natively (sensors → job triggers).
+- Preserve **wait-for-completion** behavior **only** when Databricks submits to an external system via a
+  notebook/wheel and the original operator waited; `wait_for_completion=False` → submit and return.
+- The `[operators] default_deferrable` config only affects operators that support switching modes — it
+  does not change the mapping.
+
+Reference: https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/deferring.html
+(Airflow 3's *native async* `@task` and *resumable* external jobs are a separate, v3-only concern — see
+`references/airflow3-migration.md`.)
+
+---
+
 ## Tier 1: Direct 1:1 Mappings
 
 These operators have clear, deterministic equivalents in DABs.

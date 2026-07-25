@@ -33,25 +33,12 @@ their import path is recognized.
 
 ---
 
-## Execution-model changes: deferrable, native async, and resumable
+## Airflow 3 execution-model additions: native async and resumable
 
-Airflow 3's authoring surface is not only imports and scheduling — three execution-model constructs
-affect what you parse. None has a DABs "mode" switch; migrate the underlying operation.
-
-### Deferrable operators (a runtime optimization — ignore it)
-
-Deferrability is purely a worker-efficiency mechanism (release a worker slot while waiting via the
-triggerer); it does not change what the task does. Map the **underlying operation** normally and:
-
-- Drop `deferrable=True` / `*DeferrableOperator` suffixes, triggerer configuration, and `poke_interval`.
-- Keep task **timeout** and **retry** settings where they apply.
-- Generate **no polling** — Lakeflow owns waiting/queueing/triggers natively (sensors → job triggers).
-- Preserve **wait-for-completion** behavior **only** when Databricks submits to an external system via a
-  notebook/wheel and the original operator waited; `wait_for_completion=False` → submit and return.
-- `[operators] default_deferrable` only affects operators that support switching modes — it does not
-  change the mapping.
-
-Reference: https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/deferring.html
+Two execution-model constructs are new in Airflow 3 and affect what you parse. Neither has a DABs
+"mode" switch; migrate the underlying operation. (**Deferrable operators are NOT Airflow-3-specific** —
+they date from Airflow 2.2 — so their migration rule lives with the operator mappings in
+`references/operator-mapping.md`, not here.)
 
 ### Native async TaskFlow (`@task` on `async def`) — Airflow 3.2.0
 
