@@ -142,7 +142,7 @@ def test_exact_selectors_allow_versioned_pair():
 
 def test_exact_selectors_bundled_skips_equal_fqn_tests():
     # Equal-FQN tests would fail the per-test exactness scan, but in bundled mode they
-    # are never emitted as individual fqn: selectors — they run via tests_<resource>.
+    # are not selected individually — they run via their resource's `<resource>_test` task.
     m = _manifest(
         {
             "test.p.dup": _test("dup", ["p", "staging", "dup"]),
@@ -275,10 +275,15 @@ def test_bundled_mode_collapses_tests_and_preserves_cautious():
     # Bundled test tasks are the `dbt test ... --indirect-selection cautious` commands
     # (0.3.1 keys them `<resource>_test`; match on the command, not the key name).
     tasks = glue._build_tasks("dev", bundle_tests=True)
-    for task in tasks:
-        for cmd in _commands_of(task):
-            if "dbt test" in cmd and "--indirect-selection cautious" in cmd:
-                assert "--indirect-selection empty" not in cmd  # bundle selection not narrowed
+    bundled = [
+        c
+        for t in tasks
+        for c in _commands_of(t)
+        if "dbt test" in c and "--indirect-selection cautious" in c
+    ]
+    assert bundled, "expected at least one bundled test task in bundled mode"
+    for cmd in bundled:
+        assert "--indirect-selection empty" not in cmd  # bundle selection not narrowed
 
 
 @pytest.mark.skipif(

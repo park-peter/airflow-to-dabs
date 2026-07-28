@@ -82,8 +82,8 @@ PROFILES_DIRECTORY = "dbt_profiles"
 # never be applied globally (it is invalid for `dbt test`).
 EXTRA_DBT_COMMAND_OPTIONS = ""
 
-# When True, a resource's single-model tests collapse into ONE `tests_<resource>`
-# task (dbt test --select <resource> --indirect-selection cautious) instead of one
+# When True, a resource's single-model tests collapse into ONE `<resource>_test`
+# task (dbt test --select <resource-fqn> --indirect-selection cautious) instead of one
 # task per test node; cross-model and zero-dep tests still get their own tasks.
 # Bundling is the main lever for the 1,000-task-per-job Lakeflow limit, but it
 # coarsens retry granularity (a model's tests rerun together, not individually).
@@ -183,7 +183,7 @@ def _assert_exact_selectors(manifest: dict, *, bundle_tests: bool = BUNDLE_TESTS
     test named `[ab]` glob-matching only its sibling `a`).
 
     Under BUNDLE_TESTS, individual test nodes are not selected on their own — a resource's
-    single-model tests run via its `tests_<resource>` task (targeting the resource, which
+    single-model tests run via its `<resource>_test` task (targeting the resource, which
     is still checked here). Scanning test nodes then would raise false positives on
     equal-FQN or shadowed tests that are never selected individually, so test nodes are
     excluded from the scan in bundled mode."""

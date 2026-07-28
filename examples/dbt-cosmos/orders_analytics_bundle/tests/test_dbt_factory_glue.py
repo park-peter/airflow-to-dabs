@@ -142,7 +142,7 @@ def test_exact_selectors_allow_versioned_pair():
 
 def test_exact_selectors_bundled_skips_equal_fqn_tests():
     # Equal-FQN tests would fail the per-test exactness scan, but in bundled mode they
-    # are never emitted as individual fqn: selectors — they run via tests_<resource>.
+    # are not selected individually — they run via their resource's `<resource>_test` task.
     m = _manifest(
         {
             "test.p.dup": _test("dup", ["p", "staging", "dup"]),
