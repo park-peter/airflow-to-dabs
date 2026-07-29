@@ -242,9 +242,54 @@ Common `default_args` fields and their DABs equivalents:
 | `end_date` | *(no direct equivalent -- pause the schedule manually)* |
 | `execution_timeout` | `timeout_seconds` on task |
 | `sla` | *(no direct equivalent -- use monitoring/alerts)* |
-| `catchup` | *(no direct equivalent, note in migration notes)* |
+| `catchup` | `catchup=True` → use native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) to replay history (requires `{{ ds }}` mapped to a job parameter — see the execution-date section); `catchup=False` (the Airflow 3 default) → no backfill. Note the expectation in MIGRATION_NOTES.md. |
 
 ---
+
+## Execution date (`{{ ds }}` / `execution_date`) semantics and backfill
+
+Airflow's `{{ ds }}`/`execution_date` has **no single Databricks equivalent** — its correct mapping
+depends on what the DAG *means* by it, and the wrong choice silently processes the wrong data (most
+dangerously under backfill). Decide the semantics per DAG before mapping, and **ask the user when it
+is ambiguous** — do not default silently.
+
+**Step 1 — classify the intent of each `{{ ds }}` use:**
+
+- **Wall-clock / "today's data"** — the task just wants the date the run happens on, with no
+  historical-replay meaning. Rare in scheduled ETL. → default the parameter to
+  `{{job.start_time.iso_date}}` (actual execution start).
+- **Logical interval / partition key** — `{{ ds }}` identifies *which* data window is being processed
+  (a `WHERE date = '{{ ds }}'` filter, a partition path `.../{{ ds }}/...`, an incremental cursor).
+  This is the common case and the one that must survive backfill. → default the parameter to
+  **`{{job.trigger.time.iso_date}}`** (the scheduled trigger time), not `start_time` — `start_time`
+  drifts with queue delay and retries.
+
+  > Airflow 2 vs Databricks convention: an Airflow 2 scheduled run's `logical_date` is the **start of
+  > the data interval** (typically one period *behind* the run's fire time), while Databricks
+  > `{{job.trigger.time}}` and Airflow 3's `CronTriggerTimetable` `logical_date` are the **fire time**.
+  > If the DAG's `{{ ds }}` relied on the Airflow 2 "process the previous interval" convention,
+  > confirm the intended window with the user and offset in code if needed; flag when unsure.
+
+> `{{job.trigger.time}}` is defined for **cron/scheduled** runs. If the DAG's schedule became an
+> **event trigger** (`file_arrival`, `table_update`, `continuous`) — e.g. a cron+sensor collapsed to
+> file arrival — there is no scheduled logical date: `{{job.trigger.time}}` is not a reliable source.
+> Derive the partition from the event itself (e.g. parse the date from the arriving file path /
+> `{{job.trigger.file_arrival.location}}`), fall back to `{{job.start_time.iso_date}}` as an
+> approximation, or use backfill for exact historical windows — and flag the change.
+
+**Step 2 — always make it a real job parameter (backfill resilience).** Whichever default you choose,
+`{{ ds }}` must map to a named **job parameter** (e.g. `run_date`), never a hardcoded date or an
+inline `{{job.start_time...}}` buried in a task. Native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs)
+replays a job over a historical range by **overriding an existing date/time job parameter** per
+replayed window with `{{backfill.iso_date}}` (the start of that window's range). What makes a job
+backfillable is that such a parameter **exists** to be overridden — a job that hardcodes the date or
+computes it inline from `{{job.start_time...}}` gives backfill nothing to override, so history cannot
+be replayed for the right window. (During a backfill the override wins regardless of the parameter's
+default; the default only governs **normal** runs — which is why a logical/partition date should
+default to `{{job.trigger.time.iso_date}}`, not `{{job.start_time.iso_date}}`, whose drift on delayed
+or retried runs would process the wrong date.) So: expose `run_date`, default it to the Step-1 choice,
+and record in `MIGRATION_NOTES.md` that a backfill should override `run_date` with `{{backfill.iso_date}}`. (Backfills always run the whole job; **pipeline tasks are not parameterized**
+and run as-is, so a pipeline-only workload can't carry a backfill date — flag it.)
 
 ## Jinja Template Variable Conversion
 
@@ -254,9 +299,9 @@ Airflow Jinja variables used in operators/SQL need conversion to DABs dynamic va
 
 | Airflow Jinja | DABs Equivalent | Notes |
 |---|---|---|
-| `{{ ds }}` | `{{job.parameters.run_date}}` | Define `run_date` as job parameter with default `{{job.start_time.iso_date}}` |
+| `{{ ds }}` | `{{job.parameters.run_date}}` | Define `run_date` as a job parameter (so backfill can override it). Default `{{job.trigger.time.iso_date}}` for a logical/partition date on a scheduled job (correct on normal runs); `{{job.start_time.iso_date}}` only for wall-clock "today" semantics or an event-triggered job. See the semantics + backfill section above. |
 | `{{ ds_nodash }}` | *(compute in notebook)* | No direct equivalent. Derive from `run_date` in code. |
-| `{{ execution_date }}` | `{{job.parameters.run_date}}` | Same as `ds` for most use cases |
+| `{{ execution_date }}` | `{{job.parameters.run_date}}` | Same as `ds`; classify wall-clock vs logical per the section above. |
 | `{{ prev_ds }}` | *(compute in notebook)* | No direct equivalent. Calculate in code. |
 | `{{ next_ds }}` | *(compute in notebook)* | No direct equivalent. Calculate in code. |
 | `{{ params.x }}` | `{{job.parameters.x}}` | Define as job parameter |

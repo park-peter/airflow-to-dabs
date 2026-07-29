@@ -109,8 +109,12 @@ resources:
 
       # Job parameters (accessible by all tasks)
       parameters:
+        # For an Airflow {{ ds }} that is a logical/partition date on a SCHEDULED job, default to the
+        # scheduled trigger time (correct on normal runs); a native Databricks backfill overrides it
+        # with {{backfill.iso_date}}. Use {{job.start_time.iso_date}} for wall-clock "today" semantics
+        # or an event-triggered job (trigger.time is unreliable there — see schedule-trigger-mapping.md).
         - name: run_date
-          default: "{{job.start_time.iso_date}}"
+          default: "{{job.trigger.time.iso_date}}"
         - name: env
           default: "dev"
 
@@ -705,7 +709,9 @@ Used within task parameter values using `{{}}` syntax:
 |---|---|
 | `{{job.parameters.<name>}}` | Job-level parameter |
 | `{{job.run_id}}` | Current run ID |
-| `{{job.start_time.iso_date}}` | Run start date (YYYY-MM-DD) |
+| `{{job.start_time.iso_date}}` | Actual execution start date, UTC (YYYY-MM-DD). Wall-clock — drifts with queue delay/retries. |
+| `{{job.trigger.time.iso_date}}` | Scheduled trigger date, UTC (rounded to the minute for cron). The right default for a logical/partition `{{ ds }}` on a scheduled job — correct on normal runs, where `start_time` would drift. Other parts: `iso_datetime`, `year`, `month`, `day`, `timestamp_ms`. |
+| `{{backfill.iso_date}}` | Start of the time range for a native [backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) run — the logical date being replayed. Set by the backfill UI as a per-run override of a date/time job parameter. Also `iso_datetime`, `timestamp_ms`, `year`, `month`, `day`. |
 | `{{tasks.<key>.values.<name>}}` | Task value set by upstream task via `dbutils.jobs.taskValues.set()` |
 | `{{input}}` | Current element inside a `for_each_task` nested task |
 | `{{input.<key>}}` | A field of the current element (when iterating objects) |

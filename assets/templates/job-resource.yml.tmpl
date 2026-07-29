@@ -40,9 +40,13 @@ resources:
       #     - "<EMAIL>"
 
       # Job parameters (accessible by all tasks)
+      # For an Airflow {{ ds }} that is a logical/partition date on a SCHEDULED job, default run_date
+      # to {{job.trigger.time.iso_date}} (correct on normal runs); a native Databricks backfill
+      # overrides it with {{backfill.iso_date}}. Use {{job.start_time.iso_date}} for wall-clock
+      # "today" or an event-triggered job (trigger.time is unreliable there).
       # parameters:
       #   - name: run_date
-      #     default: "{{job.start_time.iso_date}}"
+      #     default: "{{job.trigger.time.iso_date}}"
 
       # Shared cluster definition
       job_clusters:

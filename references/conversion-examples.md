@@ -553,8 +553,10 @@ resources:
           - "platform@example.com"
 
       parameters:
+        # Logical/partition date (passed as --date to the ETL), so default to the scheduled
+        # trigger time; a native Databricks backfill overrides it with {{backfill.iso_date}}.
         - name: run_date
-          default: "{{job.start_time.iso_date}}"
+          default: "{{job.trigger.time.iso_date}}"
         - name: source_path
           default: "s3://raw-data/"
 
@@ -656,7 +658,7 @@ print("Pipeline complete")
 
 **Migration notes:**
 - `SparkSubmitOperator` `conf` values mapped to `job_clusters[].new_cluster.spark_conf`.
-- `{{ ds }}` replaced with `{{job.parameters.run_date}}` and defined as a job parameter defaulting to `{{job.start_time.iso_date}}`.
+- `{{ ds }}` replaced with `{{job.parameters.run_date}}` — a logical/partition date (passed as `--date`), so the parameter defaults to `{{job.trigger.time.iso_date}}` (the scheduled date), not `{{job.start_time.iso_date}}` (wall-clock). A native Databricks backfill overrides `run_date` with `{{backfill.iso_date}}` per replayed window. See `references/schedule-trigger-mapping.md`.
 - Airflow `execution_timeout=timedelta(hours=2)` mapped to `timeout_seconds: 7200` on each task.
 - `retries=3` mapped to `max_retries: 3`, `retry_delay=timedelta(minutes=10)` mapped to `min_retry_interval_millis: 600000`.
 - `end` (EmptyOperator) omitted -- `send_completion_notice` is the terminal task.
