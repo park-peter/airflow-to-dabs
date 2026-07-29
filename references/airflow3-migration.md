@@ -103,7 +103,7 @@ handling as their Airflow 2 equivalents:
 | `from airflow.sdk import DAG` / `BaseOperator` | `from airflow import DAG` / `airflow.models.BaseOperator` | Same. |
 | `from airflow.sdk import Variable` / `Connection` | `airflow.models.Variable` / `Connection` | Same — Variables → job params/bundle vars; Connections → secrets/UC connections. |
 | `from airflow.sdk import chain` / `cross_downstream` | `airflow.models.baseoperator.chain` / `cross_downstream` | Same — dependency-graph helpers. |
-| `from airflow.sdk.definitions.param import Param` | `airflow.models.param.Param` | Same — DAG/task `params` → job parameters. |
+| `from airflow.sdk import Param` (or `airflow.sdk.definitions.param.Param`) | `airflow.models.param.Param` | Same — DAG/task `params` → job parameters. |
 
 ---
 
