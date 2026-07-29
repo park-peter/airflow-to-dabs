@@ -33,6 +33,23 @@ their import path is recognized.
 
 ---
 
+## Airflow 3 scheduling defaults and semantics
+
+Reading the DAG's schedule/backfill intent depends on these Airflow 3 defaults and behaviors:
+
+- **`schedule` defaults to `None`** — a DAG with no `schedule=` runs on manual trigger only. Emit no
+  DABs `schedule`/`trigger` for it (manual/`run_job_task`-driven).
+- **`catchup` defaults to `False`** — an unset `catchup` means the DAG does **not** backfill missed
+  intervals. Only treat backfill as intended when `catchup=True` is explicit; note the backfill
+  expectation (and that DABs jobs have no catchup) in `MIGRATION_NOTES.md`.
+- **A raw-cron `schedule` uses `CronTriggerTimetable`** — the run's `logical_date` is the fire time
+  (run-after), not the start of a data interval. When a cron/timetable DAG is date-sensitive (its
+  tasks read `logical_date`/`{{ ds }}` to pick the processing window), confirm the intended window and
+  record it before mapping `{{ ds }}` → `{{job.parameters.run_date}}`; flag any timetable that can't be
+  mapped deterministically.
+
+---
+
 ## Airflow 3 execution-model additions: native async and resumable
 
 Two execution-model constructs are new in Airflow 3 and affect what you parse. Neither has a DABs
@@ -86,6 +103,7 @@ handling as their Airflow 2 equivalents:
 | `from airflow.sdk import DAG` / `BaseOperator` | `from airflow import DAG` / `airflow.models.BaseOperator` | Same. |
 | `from airflow.sdk import Variable` / `Connection` | `airflow.models.Variable` / `Connection` | Same — Variables → job params/bundle vars; Connections → secrets/UC connections. |
 | `from airflow.sdk import chain` / `cross_downstream` | `airflow.models.baseoperator.chain` / `cross_downstream` | Same — dependency-graph helpers. |
+| `from airflow.sdk.definitions.param import Param` | `airflow.models.param.Param` | Same — DAG/task `params` → job parameters. |
 
 ---
 
@@ -154,9 +172,10 @@ These Airflow 3 asset features have no clean Lakeflow equivalent; **flag** them 
 
 | Removed | Replacement / handling |
 |---|---|
-| `schedule_interval=` | Use `schedule=` (the parser already reads both; Airflow 3 DAGs only use `schedule`). |
-| `SubDagOperator` | Removed — use dynamic task mapping / `TaskGroup`. The SubDag flatten in `operator-mapping.md` applies to Airflow 2 DAGs only. |
+| `schedule_interval=` | Use `schedule=`; the parser reads both. |
+| `SubDagOperator` | Use dynamic task mapping / `TaskGroup`. The SubDag flatten in `operator-mapping.md` applies to Airflow 2 DAGs only. |
 | `execution_date` context var | Use `logical_date` / `run_id`; the Jinja `{{ ds }}`/`{{ execution_date }}` mappings in `schedule-trigger-mapping.md` still apply for templated strings. |
+| `fail_stop` DAG arg | Renamed `fail_fast` (stop the DAG run on first task failure). Record the fail-fast intent in `MIGRATION_NOTES.md`; a Lakeflow job has no single equivalent switch. |
 
 ---
 
