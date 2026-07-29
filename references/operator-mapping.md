@@ -1793,7 +1793,7 @@ These operators have no direct DABs equivalent. Flag them in `MIGRATION_NOTES.md
 | Custom `BaseOperator` subclass | `notebook_task` | Extract operator logic into a notebook. Review `execute()` method. |
 | `HttpSensor` / `SimpleHttpOperator` | `notebook_task` wrapping `requests` | Use a notebook with the `requests` library for HTTP calls. |
 | `LivyOperator` | `spark_python_task` or `notebook_task` | Livy is unnecessary on Databricks; submit Spark code directly. See `hadoop-migration-guide.md`. |
-| `SqoopOperator` (import) | Lakeflow Connect pipeline | Managed RDBMS-to-lakehouse ingestion with CDC. Not a DABs task -- create a pipeline resource. See `hadoop-migration-guide.md`. |
+| `SqoopOperator` (import) | Lakeflow Connect pipeline | Managed RDBMS-to-lakehouse ingestion. A cursor `--incremental` (`append`/`lastmodified`) maps to **query-based** ingestion, NOT CDC; reserve CDC for a true log-based source. Not a DABs task -- create a pipeline resource. See `hadoop-migration-guide.md`. |
 | `SqoopOperator` (export) | `notebook_task` with JDBC write | `df.write.format("jdbc")` in a notebook. See `hadoop-migration-guide.md`. |
 | `PigOperator` | `notebook_task` or `sql_task` | Rewrite Pig Latin scripts as Spark SQL or PySpark. No Pig runtime on Databricks. |
 | `DbtCloudRunJobOperator` / `DbtCloudJobRunSensor` | `notebook_task` calling the dbt Cloud API, or full migration to dbt factory mode / `dbt_task` | dbt Cloud owns orchestration and compute — factory mode does not apply unless the dbt project itself migrates to Databricks. The notebook fallback needs dbt Cloud `account_id`/`job_id` and an API token in secrets. |
