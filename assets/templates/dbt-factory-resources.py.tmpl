@@ -13,11 +13,12 @@ through the `dbt_vars` job parameter.
 Save as: resources/<DAG_MODULE>_dbt_job.py (one module per dbt-bearing DAG).
 <DAG_MODULE> is the dag_id sanitized to a valid Python identifier (replace every
 character outside [a-zA-Z0-9_] with "_"; e.g. sales.daily -> sales_daily).
-Verified against databricks-dbt-factory==0.2.1 with databricks-bundles 1.0.0-1.6.0
-on Databricks CLI v1.7.0.
+Verified against databricks-dbt-factory==0.3.1 with databricks-bundles 1.0.0-1.7.0
+on Databricks CLI v1.7.0. databricks-dbt-factory selects every node by its full
+dot-joined FQN and emits one task per dbt test (including unit tests); this glue
+validates and prunes that output rather than rewriting selectors.
 """
 
-import json
 import os
 import re
 import shlex
@@ -35,8 +36,7 @@ from databricks.bundles.jobs import Job
 
 from databricks_dbt_factory.DbtFactory import DbtFactory
 from databricks_dbt_factory.DbtTask import DbtTaskOptions, TaskType
-from databricks_dbt_factory.SpecsHandler import SpecsHandler
-from databricks_dbt_factory.Utils import generate_task_key
+from databricks_dbt_factory.Utils import read_dbt_manifest
 from databricks_dbt_factory.TaskFactory import (
     DbtDependencyResolver,
     ModelTaskFactory,
@@ -82,8 +82,8 @@ PROFILES_DIRECTORY = "dbt_profiles"
 # never be applied globally (it is invalid for `dbt test`).
 EXTRA_DBT_COMMAND_OPTIONS = ""
 
-# When True, a resource's single-model tests collapse into ONE `tests_<resource>`
-# task (dbt test --select <resource> --indirect-selection cautious) instead of one
+# When True, a resource's single-model tests collapse into ONE `<resource>_test`
+# task (dbt test --select <resource-fqn> --indirect-selection cautious) instead of one
 # task per test node; cross-model and zero-dep tests still get their own tasks.
 # Bundling is the main lever for the 1,000-task-per-job Lakeflow limit, but it
 # coarsens retry granularity (a model's tests rerun together, not individually).
@@ -156,18 +156,6 @@ def _write_serverless_environment_file() -> None:
     _write_idempotent(_BUNDLE_ROOT / SERVERLESS_ENV_FILE, content)
 
 
-def _fail_closed_checks(manifest: dict) -> None:
-    """Refuse to generate a job that would silently misbehave on databricks-dbt-factory
-    0.2.1 — fall back to a single dbt_task (or fix the project) instead."""
-    if manifest.get("unit_tests") and "test" in FACTORY_TYPES:
-        raise RuntimeError(
-            "This dbt project defines unit tests, which databricks-dbt-factory 0.2.1 "
-            "silently drops (it only reads manifest nodes). Converted runs would skip "
-            "them. Fall back to a single dbt_task for this workload, or remove the "
-            "unit tests from scope."
-        )
-
-
 def _flat_fqn(fqn: list) -> list[str]:
     """Normalize an FQN the way dbt's selector does: split each component on dots."""
     return [part for comp in fqn for part in str(comp).split(".")]
@@ -184,17 +172,21 @@ def _node_selector_matches(selector: str, fqn: list, is_versioned: bool) -> bool
 
 
 def _assert_exact_selectors(manifest: dict, *, bundle_tests: bool = BUNDLE_TESTS) -> None:
-    """Every generated `--select fqn:<full fqn>` must resolve to exactly its own node
-    among same-type nodes. Matching uses dbt's own is_selected_node (imported above)
-    so this check cannot drift from runtime selector semantics. Requiring the matched
-    set to equal {self} also rejects selectors that resolve to a single WRONG node
-    (e.g. a test named `[ab]` glob-matching only its sibling `a`).
+    """Defense-in-depth: databricks-dbt-factory 0.3.1 selects every node by its full
+    dot-joined FQN, which is unambiguous across packages and subdirectories. This check
+    independently confirms each node's FQN still resolves to exactly its own node among
+    same-type nodes, catching the residual cases the factory's FQN generation cannot:
+    two nodes with an identical FQN, and FQN characters that break dbt's selector grammar
+    or the runner's shlex parsing. Matching uses dbt's own is_selected_node (imported
+    above) so it cannot drift from runtime selector semantics; requiring the matched set
+    to equal {self} also rejects a selector that resolves to a single WRONG node (e.g. a
+    test named `[ab]` glob-matching only its sibling `a`).
 
-    Under BUNDLE_TESTS, individual test nodes are not emitted as `fqn:` selectors — a
-    resource's single-model tests run via its `tests_<resource>` task (targeting the
-    resource, which is still exactness-checked here). Scanning test nodes then would
-    raise false positives on equal-FQN or shadowed tests that are never selected
-    individually, so test nodes are excluded from the scan in bundled mode."""
+    Under BUNDLE_TESTS, individual test nodes are not selected on their own — a resource's
+    single-model tests run via its `<resource>_test` task (targeting the resource, which
+    is still checked here). Scanning test nodes then would raise false positives on
+    equal-FQN or shadowed tests that are never selected individually, so test nodes are
+    excluded from the scan in bundled mode."""
     scanned_types = set(FACTORY_TYPES)
     if bundle_tests:
         scanned_types.discard("test")
@@ -216,7 +208,7 @@ def _assert_exact_selectors(manifest: dict, *, bundle_tests: bool = BUNDLE_TESTS
             # components).
             if not re.fullmatch(r"[A-Za-z0-9_.-]+", selector):
                 problems.append(
-                    f"{rtype} 'fqn:{selector}' contains characters unsafe for dbt "
+                    f"{rtype} '{selector}' contains characters unsafe for dbt "
                     "selector or shell parsing"
                 )
                 continue
@@ -232,7 +224,7 @@ def _assert_exact_selectors(manifest: dict, *, bundle_tests: bool = BUNDLE_TESTS
                     if key not in matched
                     else f"also matches {extras}"
                 )
-                problems.append(f"{rtype} 'fqn:{selector}' {detail}")
+                problems.append(f"{rtype} '{selector}' {detail}")
     if problems:
         raise RuntimeError(
             "Generated selectors are not exact: "
@@ -244,84 +236,25 @@ def _assert_exact_selectors(manifest: dict, *, bundle_tests: bool = BUNDLE_TESTS
 
 
 def _assert_unique_task_keys(tasks: list[dict]) -> None:
-    """Distinct node names can sanitize to the same task key (model.foo_bar.baz and
-    model.foo.bar_baz both become model_foo_bar_baz); PyDABs serialization keeps only
-    one, silently dropping the rest."""
+    """Defense-in-depth: databricks-dbt-factory 0.3.1 derives readable task keys
+    (`<resource>_<type>`, bundled `<resource>_test`) through build_task_key_maps, which
+    already disambiguates collisions and bounds keys to 100 chars — so the factory's own
+    output is unique. This independently confirms that invariant on the emitted tasks:
+    duplicate keys would make PyDABs serialization keep only one, silently dropping the
+    rest, so fail closed if a factory regression ever lets one through."""
     counts = Counter(task["task_key"] for task in tasks)
     duplicates = sorted(key for key, count in counts.items() if count > 1)
     if duplicates:
         raise RuntimeError(
-            "Sanitized task keys collide: "
+            "Generated task keys collide: "
             + ", ".join(duplicates)
-            + ". Rename the dbt resources so their sanitized names are unique, or "
-            "fall back to a single dbt_task."
+            + ". This should not happen with databricks-dbt-factory 0.3.1; rename the "
+            "affected dbt resources or fall back to a single dbt_task."
         )
 
 
-def _qualify_selectors(tasks: list[dict], manifest: dict) -> list[dict]:
-    """0.2.1 emits `--select <bare name>`, and dbt bare selectors also match FQN/path
-    components — a node named like a directory or another resource over-selects.
-    Rewrite every selector to the node's full FQN (exactness asserted by
-    _assert_exact_selectors), and pin test commands to direct selection with
-    `--indirect-selection empty` so a test FQN coinciding with a model FQN cannot
-    pull in the model's attached tests.
-
-    Bundled `tests_<resource>` tasks (emitted only when BUNDLE_TESTS is True) are keyed
-    `tests_<resource task key>`, outside info_by_key. 0.2.1 builds their select as
-    `<package>.<name>`, which under dbt's positional FQN matching misses any model in a
-    subdirectory (`models/staging/...`) — it resolves to zero nodes, so the task would
-    silently run zero tests. Rewrite that select to the resource's full FQN so it
-    resolves, while KEEPING `--indirect-selection cautious` (never `empty`, which would
-    select the resource but run none of its tests)."""
-    info_by_key: dict[str, tuple[str, str, str]] = {}
-    for full_name, node in manifest.get("nodes", {}).items():
-        if node.get("resource_type") in FACTORY_TYPES:
-            info_by_key[generate_task_key(full_name)] = (
-                node["name"],
-                ".".join(node["fqn"]),
-                node["resource_type"],
-            )
-
-    def rewrite(command: str, bare: str, fqn: str, rtype: str) -> str:
-        command = command.replace(f"--select {bare}", f"--select fqn:{fqn}", 1)
-        if rtype == "test":
-            # Force direct-only selection so a test's FQN never pulls in another
-            # resource's attached tests; overrides any --indirect-selection value
-            # from EXTRA_DBT_COMMAND_OPTIONS.
-            command = re.sub(r"--indirect-selection(?:=|\s+)\S+", "--indirect-selection empty", command)
-            if "--indirect-selection" not in command:
-                command += " --indirect-selection empty"
-        return command
-
-    def rewrite_bundled(command: str, fqn: str) -> str:
-        # Replace the whole select token (0.2.1's `<package>.<name>`) with the resource's
-        # full FQN; leave --indirect-selection cautious untouched so attached tests run.
-        return re.sub(r"--select\s+\S+", f"--select fqn:{fqn}", command, count=1)
-
-    def apply_to_commands(task: dict, fn) -> None:
-        if "notebook_task" in task:
-            params = task["notebook_task"].get("base_parameters", {})
-            if "dbt_commands" in params:
-                commands = json.loads(params["dbt_commands"])
-                params["dbt_commands"] = json.dumps([fn(c) for c in commands])
-        elif "dbt_task" in task:
-            task["dbt_task"]["commands"] = [fn(c) for c in task["dbt_task"]["commands"]]
-
-    for task in tasks:
-        key = task["task_key"]
-        info = info_by_key.get(key)
-        if info is not None:
-            bare, fqn, rtype = info
-            apply_to_commands(task, lambda c, bare=bare, fqn=fqn, rtype=rtype: rewrite(c, bare, fqn, rtype))
-        elif key.startswith("tests_"):
-            resource_info = info_by_key.get(key[len("tests_") :])
-            if resource_info is not None:
-                apply_to_commands(task, lambda c, fqn=resource_info[1]: rewrite_bundled(c, fqn))
-    return tasks
-
-
 def _prune_dangling_deps(tasks: list[dict]) -> list[dict]:
-    """When FACTORY_TYPES omits a node type, 0.2.1 still emits depends_on entries
+    """When FACTORY_TYPES omits a node type, databricks-dbt-factory still emits depends_on entries
     pointing at the omitted tasks. Retain only references to tasks that exist."""
     emitted = {task["task_key"] for task in tasks}
     for task in tasks:
@@ -405,13 +338,12 @@ def _build_tasks(
         for node_type in FACTORY_TYPES
     }
 
-    factory = DbtFactory(SpecsHandler(), task_factories, bundle_tests=bundle_tests)
-    manifest = SpecsHandler.read_dbt_manifest(str(_BUNDLE_ROOT / _manifest_path(target)))
-    _fail_closed_checks(manifest)
+    factory = DbtFactory(task_factories, bundle_tests=bundle_tests)
+    manifest = read_dbt_manifest(str(_BUNDLE_ROOT / _manifest_path(target)))
     _assert_exact_selectors(manifest, bundle_tests=bundle_tests)
     tasks = factory.create_tasks(manifest)
     _assert_unique_task_keys(tasks)
-    tasks = _prune_dangling_deps(_qualify_selectors(tasks, manifest))
+    tasks = _prune_dangling_deps(tasks)
     if enforce_limit:
         _assert_within_task_limit(tasks)
     return tasks

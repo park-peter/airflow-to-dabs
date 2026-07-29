@@ -285,7 +285,7 @@ The agent converts Airflow concepts into Lakeflow/DABs concepts:
 | File sensor | `trigger.file_arrival` |
 | Table/SQL sensor | `trigger.table_update` |
 | Airflow `params` | Lakeflow job `parameters` |
-| `{{ ds }}` | `{{job.parameters.run_date}}` |
+| `{{ ds }}` | `{{job.parameters.run_date}}` (a logical/partition date; this job is file-arrival triggered so it defaults to `{{job.start_time.iso_date}}` — a cron-scheduled job would default to `{{job.trigger.time.iso_date}}`; backfill overrides it with `{{backfill.iso_date}}`) |
 | Python callable | `.py` Databricks notebook or Spark Python source |
 | Inline SQL | `.sql` file referenced by `sql_task.file.path` |
 

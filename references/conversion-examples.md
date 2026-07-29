@@ -553,8 +553,10 @@ resources:
           - "platform@example.com"
 
       parameters:
+        # Logical/partition date (passed as --date to the ETL), so default to the scheduled
+        # trigger time; a native Databricks backfill overrides it with {{backfill.iso_date}}.
         - name: run_date
-          default: "{{job.start_time.iso_date}}"
+          default: "{{job.trigger.time.iso_date}}"
         - name: source_path
           default: "s3://raw-data/"
 
@@ -656,7 +658,7 @@ print("Pipeline complete")
 
 **Migration notes:**
 - `SparkSubmitOperator` `conf` values mapped to `job_clusters[].new_cluster.spark_conf`.
-- `{{ ds }}` replaced with `{{job.parameters.run_date}}` and defined as a job parameter defaulting to `{{job.start_time.iso_date}}`.
+- `{{ ds }}` replaced with `{{job.parameters.run_date}}` — a logical/partition date (passed as `--date`), so the parameter defaults to `{{job.trigger.time.iso_date}}` (the scheduled date), not `{{job.start_time.iso_date}}` (wall-clock). A native Databricks backfill overrides `run_date` with `{{backfill.iso_date}}` per replayed window. See `references/schedule-trigger-mapping.md`.
 - Airflow `execution_timeout=timedelta(hours=2)` mapped to `timeout_seconds: 7200` on each task.
 - `retries=3` mapped to `max_retries: 3`, `retry_delay=timedelta(minutes=10)` mapped to `min_retry_interval_millis: 600000`.
 - `end` (EmptyOperator) omitted -- `send_completion_notice` is the terminal task.
@@ -767,7 +769,7 @@ from databricks.bundles.core import Bundle, Resources
 from databricks.bundles.jobs import Job
 from databricks_dbt_factory.DbtFactory import DbtFactory
 from databricks_dbt_factory.DbtTask import DbtTaskOptions, TaskType
-from databricks_dbt_factory.SpecsHandler import SpecsHandler
+from databricks_dbt_factory.Utils import read_dbt_manifest
 from databricks_dbt_factory.TaskFactory import (
     DbtDependencyResolver, ModelTaskFactory, SeedTaskFactory,
     SnapshotTaskFactory, TestTaskFactory,
@@ -788,14 +790,12 @@ def _build_tasks(target: str) -> list[dict]:
     classes = {"model": ModelTaskFactory, "snapshot": SnapshotTaskFactory,
                "seed": SeedTaskFactory, "test": TestTaskFactory}
     factories = {t: classes[t](resolver, options, f"--target {target}") for t in FACTORY_TYPES}
-    factory = DbtFactory(SpecsHandler(), factories, bundle_tests=BUNDLE_TESTS)  # True collapses tests per resource
-    manifest = SpecsHandler.read_dbt_manifest(f"target/{target}/manifest.json")  # per-target
-    _fail_closed_checks(manifest)              # unit tests -> error (0.2.1 drops them)
-    _assert_exact_selectors(manifest, bundle_tests=BUNDLE_TESTS)  # each selector -> its own node (dbt's matcher); skips tests when bundling
-    tasks = factory.create_tasks(manifest)
-    # ... _qualify_selectors / _prune_dangling_deps, then _assert_within_task_limit (1,000-task cap)
-    _assert_unique_task_keys(tasks)            # sanitized-key collisions -> error
-    return _prune_dangling_deps(_qualify_selectors(tasks, manifest))  # fqn: + tests --indirect-selection empty
+    factory = DbtFactory(factories, bundle_tests=BUNDLE_TESTS)  # True collapses tests per resource
+    manifest = read_dbt_manifest(f"target/{target}/manifest.json")  # per-target
+    _assert_exact_selectors(manifest, bundle_tests=BUNDLE_TESTS)  # each node's FQN -> its own node (dbt's matcher); skips tests when bundling
+    tasks = factory.create_tasks(manifest)     # 0.3.1 selects by full FQN; unit tests emitted natively
+    _assert_unique_task_keys(tasks)            # guarantees unique keys (belt-and-suspenders)
+    return _prune_dangling_deps(tasks)         # drop deps on omitted node types; _assert_within_task_limit (1,000-task cap)
 
 def load_resources(bundle: Bundle) -> Resources:
     resources = Resources()
@@ -821,7 +821,7 @@ For a 5-node dbt project (1 seed, 3 models, 2 tests) this generates a 6-task job
 - No `RenderConfig(select=...)` in the source, so whole-project semantics are unchanged. With selectors present, confirm before converting (factory explodes the entire manifest) or fall back to a single `dbt_task`.
 - `DatabricksTokenProfileMapping` replaced by `dbt_profiles/profiles.yml` with host/token injected by the runner notebook at run time — no Airflow connection.
 - `default_args.retries` applied to YAML-job notebook tasks; per-model reruns in the dbt job use Lakeflow repair.
-- Generated selectors are rewritten to full FQNs (`--select fqn:...`) and validated exact against dbt's own matcher; the hook fails closed on unit tests, task-key collisions, non-exact selectors, and any full-FQN component outside `[A-Za-z0-9_.-]`. Vars go only through `dbt_vars.json` / the `dbt_vars` parameter — a command-level `--vars` (either spelling) is rejected by both the glue and the runner.
+- databricks-dbt-factory 0.3.1 selects every node by its full dot-joined FQN and emits unit-test tasks natively; the glue validates each selector resolves exact against dbt's own matcher and fails closed on non-exact selectors and any FQN component outside `[A-Za-z0-9_.-]`. Vars go only through `dbt_vars.json` / the `dbt_vars` parameter — a command-level `--vars` (either spelling) is rejected by both the glue and the runner.
 - `dbt_serverless_env.yaml` pins the installed `dbt-databricks` and `dbt-core` exactly (dbt-core parity keeps the runtime matcher identical to the one the glue checks against).
 - Deploy prerequisite: `make setup && make manifest` (venv + `dbt parse` into `target/dev/`) before `databricks bundle validate`/`deploy`; for prod, `make deploy TARGET=prod` — manifests are per-target because parse bakes in profile-resolved catalog/schema.
 

@@ -22,6 +22,12 @@ resources:
           - data-engineering@example.com
 
       parameters:
+        # run_date is a logical/partition date (tasks filter WHERE order_date = :run_date). This job
+        # is file-arrival triggered, so there is no scheduled logical date — {{job.trigger.time}} is
+        # not reliable here. Default to the run's start date as an approximation for the normal
+        # (latest-arrival) case; for an exact historical window, a native Databricks backfill
+        # overrides run_date with {{backfill.iso_date}} per replayed window. For strict correctness,
+        # derive the date from the arriving file path instead (see MIGRATION_NOTES).
         - name: run_date
           default: "{{job.start_time.iso_date}}"
         - name: catalog

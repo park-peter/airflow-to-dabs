@@ -274,25 +274,32 @@ run_etl = BashOperator(
 
 ## Data Ingestion Alternatives (Sqoop Replacement)
 
-On-prem Hadoop pipelines commonly use Apache Sqoop to ingest data from RDBMS into HDFS. Sqoop has no equivalent in Databricks -- use Lakeflow Connect or Auto Loader instead.
+On-prem Hadoop pipelines commonly use Apache Sqoop to move data between RDBMS and HDFS. Sqoop has no
+direct equivalent in Databricks. **Import (RDBMS→lakehouse) and export (lakehouse→RDBMS) are different
+problems and map differently** — do not route both to Lakeflow Connect. See
+`references/lakeflow-connect.md` for the ingestion-style distinctions.
 
 ### Sqoop Operator Mapping
 
-| Airflow Operator | Databricks Alternative | Notes |
+| Sqoop operation | Databricks migration | Notes |
 |---|---|---|
-| `SqoopOperator` (import) | Lakeflow Connect (ingestion pipeline) | Managed CDC ingestion from RDBMS. Supports MySQL, PostgreSQL, Oracle, SQL Server. |
-| `SqoopOperator` (export) | JDBC write via notebook or Lakeflow Connect | `df.write.format("jdbc").option("url", ...).save()` |
-| `SqoopOperator` with `--incremental` | Lakeflow Connect with CDC | Native change data capture. |
-| Custom JDBC ingestion tasks | Auto Loader + `cloudFiles` | For file-based ingestion from cloud storage. |
+| **RDBMS→HDFS import** | Lakeflow Connect (ingestion pipeline), JDBC ingestion notebook, or federation | Connect only for a supported source into a Delta table it owns; else a JDBC read notebook, or federation for read-only query. |
+| **Incremental import** (`--incremental append`/`lastmodified`, a cursor column) | **query-based** Lakeflow Connect (cursor), **not** CDC | Sqoop's cursor `--incremental` maps to query-based ingestion — it is NOT log-based change capture. |
+| **Log-based change capture** (a true CDC source) | **CDC** Lakeflow Connect where the connector supports it | Only when the source emits a change log (MySQL/PostgreSQL/SQL Server). |
+| **HDFS/Hive→RDBMS export** | JDBC/connector write in a notebook, or a reverse-ETL tool | **NOT Lakeflow Connect** — Connect only ingests *into* the lakehouse. |
+| Custom file-based ingestion | Auto Loader + `cloudFiles` | For files landing in cloud storage — not a managed connector. |
 
 ### Conversion Approach
 
-1. **For Sqoop import tasks**: do not convert to a DABs task directly. Instead:
-   - Flag in MIGRATION_NOTES.md as requiring a Lakeflow Connect pipeline
-   - Document the source JDBC connection, target table, incremental column, and split-by column
-   - Suggest creating a separate `resources/pipelines/` entry for the ingestion pipeline
+1. **For Sqoop import tasks**: choose the ingestion style before converting.
+   - If the source has a **supported Lakeflow Connect connector** and Connect can own a new destination
+     table, emit a `resources.pipelines` ingestion pipeline (query-based for a cursor `--incremental`;
+     CDC only for a true log-based source). Document the source connection, target table, cursor/primary
+     keys, and networking in MIGRATION_NOTES.md; the UC connection is a manual prerequisite.
+   - Otherwise use a **JDBC read notebook** (`spark.read.format("jdbc")`) into Delta, or **federation**
+     for read-only query. See `references/lakeflow-connect.md`.
 
-2. **For Sqoop export tasks**: convert to a `notebook_task` using JDBC write:
+2. **For Sqoop export tasks** (lakehouse→RDBMS): convert to a `notebook_task` using JDBC write:
 
    ```python
    # Databricks notebook source

@@ -1,0 +1,27 @@
+resources:
+  pipelines:
+    # Query-based Lakeflow Connect ingestion from a Snowflake foreign catalog into Delta.
+    # No dedicated Snowflake connector exists — federated sources ingest via
+    # ingest_from_uc_foreign_catalog (no connection_name / gateway on the ingestion def).
+    orders_ingestion:
+      name: orders_ingestion
+      ingestion_definition:
+        ingest_from_uc_foreign_catalog: true
+        objects:
+          - table:
+              source_catalog: ${var.snowflake_foreign_catalog}
+              source_schema: public
+              source_table: orders
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+              destination_table: raw_orders
+              # Query-based (non-CDC) ingestion needs a cursor to detect new/changed
+              # rows and primary keys to upsert (unless APPEND_ONLY). These mirror the
+              # source DAG's cursor (updated_at) and key (order_id).
+              table_configuration:
+                primary_keys:
+                  - order_id
+                scd_type: SCD_TYPE_1
+                query_based_connector_config:
+                  cursor_columns:
+                    - updated_at

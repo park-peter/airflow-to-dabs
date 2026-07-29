@@ -109,8 +109,12 @@ resources:
 
       # Job parameters (accessible by all tasks)
       parameters:
+        # For an Airflow {{ ds }} that is a logical/partition date on a SCHEDULED job, default to the
+        # scheduled trigger time (correct on normal runs); a native Databricks backfill overrides it
+        # with {{backfill.iso_date}}. Use {{job.start_time.iso_date}} for wall-clock "today" semantics
+        # or an event-triggered job (trigger.time is unreliable there — see schedule-trigger-mapping.md).
         - name: run_date
-          default: "{{job.start_time.iso_date}}"
+          default: "{{job.trigger.time.iso_date}}"
         - name: env
           default: "dev"
 
@@ -266,14 +270,103 @@ Runs a SQL query, SQL file, or refreshes a SQL alert/dashboard.
 
 ### pipeline_task
 
-Triggers a Lakeflow Declarative Pipeline update.
+Triggers a Lakeflow Declarative Pipeline update (a DLT/declarative pipeline, or a Lakeflow Connect
+managed-ingestion pipeline — see below).
 
 ```yaml
 - task_key: my_pipeline
   pipeline_task:
-    pipeline_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # Required.
+    pipeline_id: ${resources.pipelines.my_pipeline.id}   # Required. Bundle ref or pipeline ID.
     full_refresh: false                                    # Optional. Default false.
 ```
+
+---
+
+### Managed-ingestion pipelines (Lakeflow Connect)
+
+A Lakeflow Connect ingestion pipeline is a `resources.pipelines.<name>` entry carrying an
+`ingestion_definition`. See `references/lakeflow-connect.md` for when to choose Connect over a Jobs
+task. The schema's `ingestion_definition` description warns it should not be mixed with a normal DLT
+pipeline's `libraries` settings; note, however, that current query-based-ingestion examples do set
+`catalog`/`target` alongside `ingestion_definition` — follow the field combination in the current docs /
+`databricks bundle schema` for your CLI version rather than assuming a blanket incompatibility.
+
+**Combined ingestion (primary/canonical)** — one pipeline, `connection_name` on the ingestion
+definition (SaaS, files, query-based DB, and CDC via `connection_name`; add `connector_type` when the
+source supports both query-based and CDC):
+
+```yaml
+resources:
+  pipelines:
+    salesforce_ingest:
+      name: salesforce_ingest
+      ingestion_definition:
+        connection_name: ${var.salesforce_connection}   # UC connection (created out-of-band)
+        objects:
+          - table:
+              source_schema: salesforce
+              source_table: opportunity
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+```
+
+**Foreign-catalog ingestion (query-based, for federated sources — Snowflake/BigQuery/Redshift/Synapse)**
+— set `ingest_from_uc_foreign_catalog: true` and reference the source by `source_catalog/schema/table`
+(no `connection_name` / gateway on the ingestion definition):
+
+```yaml
+resources:
+  pipelines:
+    snowflake_ingest:
+      name: snowflake_ingest
+      ingestion_definition:
+        ingest_from_uc_foreign_catalog: true
+        objects:
+          - table:
+              source_catalog: ${var.snowflake_foreign_catalog}   # a UC foreign catalog (below)
+              source_schema: public
+              source_table: orders
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+```
+
+The **foreign catalog** is a bundle resource (`resources.catalogs`), created from a UC connection. It
+requires `bundle.engine: direct` — "defining catalogs is only supported if you are using the direct
+deployment engine." A foreign catalog needs `connection_name` **plus source-specific `options`** (e.g.
+`options: { database: '<db>' }` for Snowflake/PostgreSQL/Redshift per CREATE FOREIGN CATALOG); a
+`connection_name`-only catalog can pass schema validation but fail at deploy. **Reference an existing
+foreign catalog by default; only create one when the bundle should own it.**
+
+```yaml
+bundle:
+  name: snowflake-ingest
+  engine: direct                     # required to define catalogs in a bundle
+
+resources:
+  catalogs:
+    snowflake_fc:
+      name: ${var.snowflake_foreign_catalog}
+      connection_name: ${var.snowflake_connection}
+      options:
+        database: ${var.snowflake_database}   # source-specific; confirm required options per source
+```
+
+> **UC connections are NOT bundle resources.** Create the connection out-of-band (`CREATE CONNECTION`
+> / UI) and reference it by name. Record it as a prerequisite in `MIGRATION_NOTES.md` (name, auth,
+> networking).
+
+**Gateway CDC (Private Preview — requires enrollment).** Log-based CDC for a database source uses a
+**separate** `gateway_definition` pipeline plus an ingestion pipeline joined by `ingestion_gateway_id`
+(`gateway_definition` and `ingestion_definition` are never on the same pipeline). The bundle schema
+marks `gateway_definition` `[Private Preview]` / `doNotSuggest` — generate this path **only** with
+connector-specific verification and confirmed workspace Private-Preview enrollment; it is not the
+default. Prefer combined CDC (`connection_name` + `connector_type`) where the connector supports it.
+
+**Orchestration.** A **triggered** ingestion pipeline is driven by a `pipeline_task` at the original
+dependency position. A **continuous** pipeline (streaming connectors like Kafka/RabbitMQ, or any
+connector documented continuous-only) is not `pipeline_task`-driven — run it standalone and have the
+downstream job depend on a job-level `trigger.table_update` on its destination table. Run mode is
+per-connector; confirm it, don't assume.
 
 ---
 
@@ -616,7 +709,9 @@ Used within task parameter values using `{{}}` syntax:
 |---|---|
 | `{{job.parameters.<name>}}` | Job-level parameter |
 | `{{job.run_id}}` | Current run ID |
-| `{{job.start_time.iso_date}}` | Run start date (YYYY-MM-DD) |
+| `{{job.start_time.iso_date}}` | Actual execution start date, UTC (YYYY-MM-DD). Wall-clock — drifts with queue delay/retries. |
+| `{{job.trigger.time.iso_date}}` | Scheduled trigger date, UTC (rounded to the minute for cron). The right default for a logical/partition `{{ ds }}` on a scheduled job — correct on normal runs, where `start_time` would drift. Other parts: `iso_datetime`, `year`, `month`, `day`, `timestamp_ms`. |
+| `{{backfill.iso_date}}` | Start of the time range for a native [backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) run — the logical date being replayed. Set by the backfill UI as a per-run override of a date/time job parameter. Also `iso_datetime`, `timestamp_ms`, `year`, `month`, `day`. |
 | `{{tasks.<key>.values.<name>}}` | Task value set by upstream task via `dbutils.jobs.taskValues.set()` |
 | `{{input}}` | Current element inside a `for_each_task` nested task |
 | `{{input.<key>}}` | A field of the current element (when iterating objects) |

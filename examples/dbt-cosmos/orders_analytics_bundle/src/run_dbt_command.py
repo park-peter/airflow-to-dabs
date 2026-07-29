@@ -1,6 +1,6 @@
 # Databricks notebook source
 #
-# Based on the run_dbt_command.py shipped in databricks-dbt-factory==0.2.1,
+# Based on the run_dbt_command.py shipped in databricks-dbt-factory==0.3.1,
 # extended with:
 #   - dbt_vars: JSON object passed as a job parameter; the SOLE vars channel.
 #     Appended to each dbt command as ["--vars", <json>] argv (never

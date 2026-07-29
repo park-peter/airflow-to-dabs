@@ -33,6 +33,62 @@ their import path is recognized.
 
 ---
 
+## Airflow 3 scheduling defaults and semantics
+
+Reading the DAG's schedule/backfill intent depends on these Airflow 3 defaults and behaviors:
+
+- **`schedule` defaults to `None`** — a DAG with no `schedule=` runs on manual trigger only. Emit no
+  DABs `schedule`/`trigger` for it (manual/`run_job_task`-driven).
+- **`catchup` defaults to `False`** — an unset `catchup` means the DAG does **not** backfill missed
+  intervals. Only treat backfill as intended when `catchup=True` is explicit; note the backfill
+  expectation (and that DABs jobs have no catchup) in `MIGRATION_NOTES.md`.
+- **A raw-cron `schedule` uses `CronTriggerTimetable`** — the run's `logical_date` is the fire time
+  (run-after), not the start of a data interval. When a cron/timetable DAG is date-sensitive (its
+  tasks read `logical_date`/`{{ ds }}` to pick the processing window), confirm the intended window and
+  record it before mapping `{{ ds }}` → `{{job.parameters.run_date}}`; flag any timetable that can't be
+  mapped deterministically.
+
+---
+
+## Airflow 3 execution-model additions: native async and resumable
+
+Two execution-model constructs are new in Airflow 3 and affect what you parse. Neither has a DABs
+"mode" switch; migrate the underlying operation. (**Deferrable operators are NOT Airflow-3-specific** —
+they date from Airflow 2.2 — so their migration rule lives with the operator mappings in
+`references/operator-mapping.md`, not here.)
+
+### Native async TaskFlow (`@task` on `async def`) — Airflow 3.2.0
+
+Airflow **3.2.0** added native async TaskFlow tasks: `@task` decorating an `async def`, using `await`,
+`asyncio.gather`, and async hooks (`HttpAsyncHook`, `SFTPHookAsync`). This is **distinct from
+deferrable** — async tasks do many concurrent I/O ops within **one** worker slot on a shared event
+loop; deferrable frees the slot during a wait. Migration:
+
+- Map to a `notebook_task` / wheel task; keep the concurrent I/O **inside one task** by default.
+- The coroutine is **not runnable as-is** — rewrite Airflow async hooks and Connections to native async
+  clients (e.g. `aiohttp`, `asyncssh`) with auth from `dbutils.secrets`; the notebook drives the event
+  loop itself.
+- Optionally split independent `asyncio.gather()` items into a `for_each_task` — flag the changed retry
+  and UI granularity. There is no DABs "async" setting.
+
+Reference: https://airflow.apache.org/docs/task-sdk/stable/deferred-vs-async-operators.html
+
+### Resumable external jobs (`ResumableJobMixin`) — Airflow 3.3.0
+
+Airflow **3.3.0** added `ResumableJobMixin`: an operator persists the external job id before polling and,
+on retry, **reattaches** to the running external job instead of resubmitting (implementers provide
+`submit_job`, `get_job_status`, `is_job_active`, `is_job_succeeded`, `poll_until_complete`,
+`get_job_result`). Migration:
+
+- If the operation becomes a **native Databricks task**, drop the resumption mechanics.
+- If the **external job is retained**, preserve the external job id / idempotency / reattachment or
+  **flag** for review — never silently turn a resumable submission into a notebook that resubmits the
+  external job on every retry.
+
+Reference: https://airflow.apache.org/docs/task-sdk/stable/resumable-job-mixin.html
+
+---
+
 ## Task SDK import equivalence (`airflow.sdk`)
 
 Airflow 3 exposes the stable authoring interface under `airflow.sdk`. Map these to the same
@@ -47,6 +103,7 @@ handling as their Airflow 2 equivalents:
 | `from airflow.sdk import DAG` / `BaseOperator` | `from airflow import DAG` / `airflow.models.BaseOperator` | Same. |
 | `from airflow.sdk import Variable` / `Connection` | `airflow.models.Variable` / `Connection` | Same — Variables → job params/bundle vars; Connections → secrets/UC connections. |
 | `from airflow.sdk import chain` / `cross_downstream` | `airflow.models.baseoperator.chain` / `cross_downstream` | Same — dependency-graph helpers. |
+| `from airflow.sdk import Param` (or `airflow.sdk.definitions.param.Param`) | `airflow.models.param.Param` | Same — DAG/task `params` → job parameters. |
 
 ---
 
@@ -115,9 +172,10 @@ These Airflow 3 asset features have no clean Lakeflow equivalent; **flag** them 
 
 | Removed | Replacement / handling |
 |---|---|
-| `schedule_interval=` | Use `schedule=` (the parser already reads both; Airflow 3 DAGs only use `schedule`). |
-| `SubDagOperator` | Removed — use dynamic task mapping / `TaskGroup`. The SubDag flatten in `operator-mapping.md` applies to Airflow 2 DAGs only. |
+| `schedule_interval=` | Use `schedule=`; the parser reads both. |
+| `SubDagOperator` | Use dynamic task mapping / `TaskGroup`. The SubDag flatten in `operator-mapping.md` applies to Airflow 2 DAGs only. |
 | `execution_date` context var | Use `logical_date` / `run_id`; the Jinja `{{ ds }}`/`{{ execution_date }}` mappings in `schedule-trigger-mapping.md` still apply for templated strings. |
+| `fail_stop` DAG arg | Renamed `fail_fast` (stop the DAG run on first task failure). Record the fail-fast intent in `MIGRATION_NOTES.md`; a Lakeflow job has no single equivalent switch. |
 
 ---
 

@@ -4,6 +4,72 @@ Authoritative reference for converting Apache Airflow operators to Databricks As
 
 ---
 
+## Source-aware classification (do this before the Tier tables)
+
+Operator **class** alone does not determine the DABs mapping — the **connection** does. A
+connection-agnostic `SQLExecuteQueryOperator` against a Databricks SQL connection is a `sql_task`; the
+same operator against a remote Postgres connection is federation, a connector notebook, or Lakeflow
+Connect. Provider-specific operators like `PostgresOperator` bind to their own database hook, so the
+operator fixes the remote engine. Resolve each task in this order before applying a Tier mapping:
+
+`operator → connection type → operation intent → data direction → destination contract → strategy`
+
+**Routing table:**
+
+| Situation | Strategy |
+|---|---|
+| Databricks connection + Databricks SQL | `sql_task` (the Tier-1 default) |
+| Remote DB, **read-only SELECT**, source is a **federatable** engine | Lakehouse Federation: `sql_task` over a foreign catalog (or a connector notebook) |
+| Remote **DML/DDL/COPY/CALL** | Keep remote via a connector/API notebook, or migrate the target to Delta |
+| **Recurring** source→Delta ingestion/replication, **eligible** source | **Lakeflow Connect** (see `references/lakeflow-connect.md`) — a decision point, not an auto-swap |
+| Files in cloud storage | **Auto Loader** (existing file path — NOT Lakeflow Connect) |
+| Unsupported source | notebook/wheel using the driver/SDK — **flag** |
+
+**Federation source list (verified):** MySQL, PostgreSQL, SQL Server, Oracle, Teradata, Redshift,
+Snowflake, BigQuery, Synapse, Salesforce Data 360, Databricks. **Athena, Trino, Presto are NOT
+federatable** — route those through JDBC/SDK/connector notebooks.
+
+**Connection resolution is fail-closed.** A DAG usually contains only an arbitrary `conn_id` string,
+not the connection *type*. Automatic routing is allowed **only** from one of: (a) **operator/provider
+certainty** — the operator class fixes the engine (`PostgresOperator`→postgres,
+`SnowflakeSqlApiOperator`→snowflake); (b) the **actual sanitized Airflow `conn_type`** when the
+connection definition is available; or (c) an **explicit user-provided `conn_id → {type, target}`
+mapping**. A `conn_id` name or host string is a **hint only** — surface it as a suggestion in
+`MIGRATION_NOTES.md`, but do not let it drive automatic routing. Anything unresolved is **manual
+review**. **Never export or inline credentials** — auth becomes a UC connection (federation/Connect)
+or `dbutils.secrets` (connector notebook), created out-of-band.
+
+**Lakeflow Connect eligibility** (all must hold, else flag): recurring ingestion/replication; a
+connector exists for the source; **Connect can create and own the destination streaming table** (it
+fails if the destination already exists — an existing target needs a new landing table + downstream
+merge/cutover); source objects/columns/cursor/keys/deletion-handling representable; no intermediate
+file that is itself an external contract; required UC connection + networking known; the connector's
+release state is acceptable — and for a **Private Preview** connector, **confirmed workspace
+enrollment/entitlement**, not just user acceptance. Full rules in `references/lakeflow-connect.md`.
+
+---
+
+## Deferrable operators and sensors (any Airflow version)
+
+Applies across all tiers and to **any Airflow version** — deferrability has existed since Airflow 2.2
+(`deferrable=True`, `*DeferrableOperator` variants, `mode="reschedule"` sensors, the triggerer). It is a
+worker-efficiency mechanism (release a worker slot while waiting) and does **not** change what the task
+does, so **ignore the deferrability and map the underlying operation normally**:
+
+- Drop `deferrable=True` / the `*DeferrableOperator` suffix, triggerer configuration, and `poke_interval`.
+- Keep task **timeout** and **retry** settings where they apply.
+- Generate **no polling** — Lakeflow owns waiting/queueing/triggers natively (sensors → job triggers).
+- Preserve **wait-for-completion** behavior **only** when Databricks submits to an external system via a
+  notebook/wheel and the original operator waited; `wait_for_completion=False` → submit and return.
+- The `[operators] default_deferrable` config only affects operators that support switching modes — it
+  does not change the mapping.
+
+Reference: https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/deferring.html
+(Airflow 3's *native async* `@task` and *resumable* external jobs are a separate, v3-only concern — see
+`references/airflow3-migration.md`.)
+
+---
+
 ## Tier 1: Direct 1:1 Mappings
 
 These operators have clear, deterministic equivalents in DABs.
@@ -476,11 +542,34 @@ COPY_OPTIONS ('force' = 'true')
 
 ---
 
-### SQLExecuteQueryOperator / PostgresOperator / MySqlOperator
+### SQLExecuteQueryOperator
 
-**DABs task type:** `sql_task`
+`SQLExecuteQueryOperator` is connection-agnostic. Its **DABs task type is `sql_task` only when the
+resolved connection targets Databricks SQL**; otherwise apply the source-aware classification step
+above.
 
-If SQL is inline, extract it to a `.sql` file and reference via `sql_task.file.path`. If it references an existing Databricks SQL query, use `sql_task.query.query_id`. Requires a `warehouse_id`.
+- **Databricks SQL connection** → `sql_task` (the mapping shown below). If SQL is inline, extract it to a
+  `.sql` file and reference via `sql_task.file.path`; if it references an existing Databricks SQL query,
+  use `sql_task.query.query_id`. Requires a `warehouse_id`.
+- **Remote DB connection, read-only SELECT, federatable engine** → run the SQL as a `sql_task` over a
+  **Lakehouse Federation foreign catalog** (auth via a UC connection), or a connector notebook.
+- **Remote DB connection, DML/DDL** → keep it remote via a connector/API notebook, or migrate the target
+  to Delta and rewrite the SQL for Databricks.
+- **Recurring remote-DB→Delta load** → consider **Lakeflow Connect** (see `references/lakeflow-connect.md`).
+- **Connection unresolved** (only a `conn_id` string, no `conn_type`) → **flag for manual review**; do not
+  assume `sql_task`.
+
+#### PostgresOperator / MySqlOperator
+
+Provider-specific operators bind to their database hooks, so `PostgresOperator` and `MySqlOperator`
+identify known remote PostgreSQL and MySQL engines respectively. Do not reinterpret either one as a
+Databricks SQL task based on its `conn_id` or connection metadata. Route by SQL intent:
+
+- **Read-only SELECT** → Lakehouse Federation over the corresponding foreign catalog, or a connector
+  notebook.
+- **Remote DML/DDL** → a connector/API notebook, or migrate the target to Delta and rewrite the SQL.
+- **Recurring source→Delta ingestion** → Lakeflow Connect when the source and destination contract meet
+  its eligibility rules.
 
 **Airflow:**
 
@@ -520,6 +609,69 @@ FROM silver.transactions
 WHERE date = :run_date
 GROUP BY date
 ```
+
+---
+
+### Snowflake operators (snowflake provider)
+
+There is **no dedicated Snowflake managed connector** in Lakeflow Connect — Snowflake maps via
+**Lakehouse Federation** (read) and **query-based foreign-catalog ingestion** (recurring copy). Apply
+the Source-aware classification step; route by *intent*, not operator class.
+
+**Operator state (snowflake provider):** `SnowflakeOperator` was **removed in v6.0** (use
+`SQLExecuteQueryOperator` with a Snowflake connection); `S3ToSnowflakeOperator` was **removed in v5.0**
+(use `CopyFromExternalStageToSnowflakeOperator`). Current: `SnowflakeSqlApiOperator`,
+`Snowflake{Check,ValueCheck,IntervalCheck}Operator`, `CopyFromExternalStageToSnowflakeOperator`. The
+Snowpark TaskFlow decorator's **DAG syntax is `@task.snowpark`** (underlying API
+`airflow.providers.snowflake.decorators.snowpark.snowpark_task`) — **recognize both forms**.
+
+| Intent | Migration |
+|---|---|
+| Read-only Snowflake SQL | Databricks SQL over a Snowflake **foreign catalog** (federation) |
+| Read Snowflake, write Delta | CTAS / INSERT…SELECT via federation |
+| **Recurring** Snowflake→Delta copy | **query-based Lakeflow Connect via foreign catalog** (`ingest_from_uc_foreign_catalog`) — see `references/lakeflow-connect.md` |
+| Snowflake DML / DDL / `COPY` / `CALL` | keep remote via a connector/API notebook, or rewrite for Delta |
+| Snowflake checks (`Snowflake*CheckOperator`) | federation `sql_task` + `assert_true()` (see SQL checks below) |
+| External stage → Snowflake (`CopyFromExternalStageToSnowflakeOperator`) | preserve Snowflake `COPY`, or change the destination to Delta + Auto Loader / `COPY INTO` |
+| Snowpark (`@task.snowpark` / `snowpark_task`) | keep Snowpark remote from a notebook, or manually rewrite to PySpark/SQL (Snowpark ≠ PySpark) |
+
+**Federation toward Snowflake is read-only** — it cannot write Snowflake or run arbitrary Snowflake
+administration. Snowflake credentials become a **UC connection** (federation / foreign-catalog
+ingestion) or `dbutils.secrets` (a connector notebook using the Snowflake Python/Spark connector).
+
+---
+
+### SQL data-quality check operators
+
+**DABs task type:** `sql_task` (over the appropriate connection — Databricks SQL or a federated foreign
+catalog per the classification step)
+
+Common-SQL and provider **check** operators — `SQLColumnCheckOperator`, `SQLTableCheckOperator`,
+`SQLValueCheckOperator`, `SQLThresholdCheckOperator`, `SQLIntervalCheckOperator`, `SQLCheckOperator`,
+`Snowflake{Check,ValueCheck,IntervalCheck}Operator` — assert a condition, so they map to a
+`sql_task` that uses **`assert_true(...)`** so a failed assertion fails the task (and the run).
+
+> **`@task.sql` is NOT a check.** It wraps `SQLExecuteQueryOperator` and can run any SELECT/DML/DDL and
+> return results — route it by connection and SQL intent (the source-aware classification step),
+> preserving or flagging any consumed output. Use `assert_true()` only when the task actually represents
+> an assertion, not for every `@task.sql`.
+
+**`assert_true()` is only the failure mechanism, not the whole conversion.** Faithfully port the
+check's semantics or **flag** it: the comparison **tolerance**, `SQLIntervalCheckOperator`'s
+**interval ratios** and time window, any **partition/`WHERE`** clause, **null handling**, and
+**dynamic thresholds** (values computed from another query). If a check can't be expressed exactly in
+SQL, flag it in `MIGRATION_NOTES.md` rather than approximating.
+
+```sql
+-- SQLValueCheckOperator (row count within tolerance) ->
+SELECT assert_true(
+  abs((SELECT count(*) FROM silver.orders WHERE order_date = :run_date) - :expected) <= :tolerance
+)
+```
+
+`GenericTransfer` is not a check — route it by (source, destination) per the classification step:
+supported source→Delta (Connect / federation + CTAS / connector notebook), Delta→external
+(JDBC/connector write), external→external (preserve via an SDK/connector task).
 
 ---
 
@@ -575,9 +727,9 @@ Factory mode changes the bundle toolchain: it adds a PyDABs `python:` block, a `
 | `deps`/`docs` only | not factory-eligible — use the single-`dbt_task` fallback |
 | Multiple commands | union of the above |
 
-The glue post-processes generated tasks: it rewrites every `--select <bare name>` to the node's full FQN (`--select fqn:<pkg>.<path>.<name>`) because dbt bare selectors also match FQN/path components — a node named like a directory (e.g. a test named `staging`) or another resource would otherwise over-select — and pins test commands to `--indirect-selection empty` so a test FQN coinciding with a model FQN cannot pull in attached tests; it prunes `depends_on` references to omitted node types (0.2.1 emits dangling dependencies otherwise); and it fails closed on three silent misbehaviors: dbt unit tests in the manifest with the `test` factory enabled (0.2.1 drops them), sanitized task-key collisions (`model.foo_bar.baz` and `model.foo.bar_baz` both become `model_foo_bar_baz`; PyDABs serialization would silently keep only one), and generated selectors that do not resolve to exactly their own node — the check imports dbt's own `is_selected_node` matcher at deploy time, so it covers everything dbt's semantics cover (prefix matching, leaf shortcuts, versioned models, wildcard slurp, package-stripped retry) and also rejects a selector resolving to a single wrong node, or one whose FQN — package, any directory component, or name — contains anything outside `[A-Za-z0-9_.-]` (an allowlist checked over the full FQN, not just the leaf; hyphens are allowed since dbt path components use them; other characters would be reinterpreted by dbt's CLI selector grammar or corrupt the runner's `shlex.split`). The runner also rejects any dbt command carrying its own `--vars` (both `--vars <yaml>` and `--vars=<yaml>`) — vars must use the canonical `dbt_vars.json`/`dbt_vars` channel.
+databricks-dbt-factory 0.3.1 selects every node by its full dot-joined FQN, emits one task per dbt test (including unit tests), and derives readable task keys (`<resource>_<type>`, e.g. `orders_model`/`countries_seed`; bundled tests keyed `<resource>_test`) that are guaranteed unique and ≤100 chars — collisions are disambiguated by package/hash inside the factory. The glue post-processes that output: it prunes `depends_on` references to omitted node types (the factory emits dangling dependencies when a node type has no factory), and applies deploy-time fail-closed guards as defense-in-depth: generated selectors that do not resolve to exactly their own node — the check imports dbt's own `is_selected_node` matcher at deploy time, so it covers everything dbt's semantics cover (prefix matching, leaf shortcuts, versioned models, wildcard slurp, package-stripped retry) and also rejects a selector resolving to a single wrong node, or one whose FQN — package, any directory component, or name — contains anything outside `[A-Za-z0-9_.-]` (an allowlist checked over the full FQN, not just the leaf; hyphens are allowed since dbt path components use them; other characters would be reinterpreted by dbt's CLI selector grammar or corrupt the runner's `shlex.split`); plus a final check that the emitted task keys are unique (the factory already guarantees this, so this only trips on a factory regression). The runner also rejects any dbt command carrying its own `--vars` (both `--vars <yaml>` and `--vars=<yaml>`) — vars must use the canonical `dbt_vars.json`/`dbt_vars` channel.
 
-**Task count and the 1,000-task per-job limit.** A single Databricks job holds at most 1,000 tasks; one-task-per-dbt-node can exceed that on large, test-heavy projects. After `make manifest`, run `make task-count` to compare unbundled vs bundled counts. When the unbundled count is over the warn threshold (900), set `BUNDLE_TESTS = True` in the glue: this collapses each resource's single-model tests into one `tests_<resource>` task (`dbt test --select <resource> --indirect-selection cautious`) instead of one task per test node — the single biggest reduction — while cross-model and zero-dep tests still get their own tasks. The tradeoff is coarser retry granularity: a model's tests rerun together, not per individual test. Bundled `tests_<resource>` tasks are intentionally kept at `--indirect-selection cautious` (not rewritten to `empty`, which would run zero tests), and selector-exactness skips test nodes in bundled mode since they are no longer emitted as individual `fqn:` selectors. If the count exceeds 1,000 even bundled, do not auto-fall-back: record the options in MIGRATION_NOTES (split the project by dbt tag into multiple factory jobs, await a dbt-factory sub-job-splitting API, or a user-chosen single `dbt_task`). The glue fails closed above 1,000 tasks at deploy time so an over-limit job is caught at `bundle validate` rather than by the Jobs API.
+**Task count and the 1,000-task per-job limit.** A single Databricks job holds at most 1,000 tasks; one-task-per-dbt-node can exceed that on large, test-heavy projects. After `make manifest`, run `make task-count` to compare unbundled vs bundled counts. When the unbundled count is over the warn threshold (900), set `BUNDLE_TESTS = True` in the glue: this collapses each resource's single-model tests into one bundled test task (`dbt test --select <resource-fqn> --indirect-selection cautious`, keyed `<resource>_test`) — the single biggest reduction — while cross-model and zero-dep tests still get their own tasks. The tradeoff is coarser retry granularity: a model's tests rerun together, not per individual test. The bundled task targets the resource with `--indirect-selection cautious` so it still sweeps in that resource's tests; selector-exactness skips test nodes in bundled mode since individual tests are not selected on their own. If the count exceeds 1,000 even bundled, do not auto-fall-back: record the options in MIGRATION_NOTES (split the project by dbt tag into multiple factory jobs, await a dbt-factory sub-job-splitting API, or a user-chosen single `dbt_task`). The glue fails closed above 1,000 tasks at deploy time so an over-limit job is caught at `bundle validate` rather than by the Jobs API.
 
 **Vars.** Static `vars` (literal dicts) live in ONE committed file: `dbt_vars.json` at the bundle root (required; `{}` when none). `make manifest` feeds it to `dbt parse --vars` and the runner falls back to it at run time whenever the `dbt_vars` job parameter is an empty object — so parse-time and run-time always agree, and no JSON is ever inlined into shell or Python quoting. A runtime override that differs from the file also bypasses the parse-cache injection (the cache was compiled with static vars — hooks, materializations, and grants would silently keep static values); dbt re-parses in-task instead, at some startup cost. A non-empty runtime `dbt_vars` REPLACES the whole dict (dbt does not merge repeated `--vars`), so overriding callers must pass the complete set. Never smuggle vars through `EXTRA_DBT_COMMAND_OPTIONS` (two `--vars` flags: dbt silently uses the last one). Runtime overrides are safe only when they do not change the dbt graph (enabled nodes, dependencies, schemas, aliases), because the task graph was compiled at deploy time. Disqualifiers: a var that changes the graph, or dbt operator tasks passing conflicting vars dicts (no single canonical value exists) — fall back to `dbt_task`.
 
@@ -1065,7 +1217,7 @@ Factory mode adds these artifacts to the bundle (templates in `assets/templates/
 | `pyproject.toml` | `dbt-pyproject.toml.tmpl` | Pins `databricks-bundles`, `databricks-dbt-factory`, and EXACT `dbt-databricks`/`dbt-core` (dbt version/runtime parity, since uv.lock is git-ignored; transitive deps not locked). Shared across DAGs. |
 | `Makefile` | `dbt-Makefile.tmpl` | `TARGET ?= dev`; `setup` (uv sync) / `manifest` (dbt deps + parse `--target $(TARGET)` `--target-path target/$(TARGET)`) / `validate` / `deploy`. Per-target manifest paths keep dev-parsed artifacts (profile-resolved catalog/schema are baked into the manifest at parse time) out of prod deployments. |
 | `dbt_profiles/profiles.yml` | `dbt-profiles.yml.tmpl` | dev/prod outputs named after bundle targets; host/token injected by the runner notebook. |
-| `src/run_dbt_command.py` | `dbt-run-command.py.tmpl` | Runner notebook owned by the bundle: the 0.2.1 packaged runner extended with `dbt_vars` (appended as `--vars` argv, never string-interpolated; empty/`{}` falls back to `dbt_vars.json`) and per-target parse-cache lookup. Re-diff against the packaged runner when bumping the pin. |
+| `src/run_dbt_command.py` | `dbt-run-command.py.tmpl` | Runner notebook owned by the bundle: the 0.3.1 packaged runner extended with `dbt_vars` (appended as `--vars` argv, never string-interpolated; empty/`{}` falls back to `dbt_vars.json`) and per-target parse-cache lookup. Re-diff against the packaged runner when bumping the pin. |
 | `dbt_vars.json` | — (write `{}` or the DAG's static vars) | Single source of static dbt vars, committed at the bundle root; consumed by `make manifest` (parse time) and the runner (run time). REQUIRED — the runner fails if it is missing. |
 | dbt project at bundle root | — (copied) | `dbt_project.yml`, `models/`, `seeds/`, etc. **v1 constraint: exactly one dbt project per bundle, colocated at the bundle root.** Multiple dbt projects → split bundles. |
 | `.gitignore` additions | — | `.venv/`, `logs/`, `dbt_packages/`, `uv.lock`, `target/**`, `dbt_serverless_env.yaml`. `target/*/manifest.json` is a local hook input (not synced); `dbt_serverless_env.yaml` and `target/*/partial_parse.msgpack` are uploaded via `sync.include` despite being git-ignored. Exact `dbt-databricks`/`dbt-core` pins in `pyproject.toml` give dbt version/runtime parity (transitive deps unlocked). |
@@ -1386,6 +1538,43 @@ if result.returncode != 0:
 
 ---
 
+### Cloud & messaging operator families
+
+These provider families have **no single 1:1 DABs task** — route each **by intent** via the
+Source-aware classification step, not by class name. The recurring strategies:
+
+- **Remote query** (a SELECT against an external warehouse/engine) → Lakehouse Federation `sql_task`
+  over a foreign catalog, **only for a federatable source** (MySQL, PostgreSQL, SQL Server, Oracle,
+  Teradata, Redshift, Snowflake, BigQuery, Synapse, Salesforce Data 360, Databricks). **Athena, Trino,
+  Presto are NOT federatable** → JDBC/SDK/connector notebook.
+- **Recurring source→Delta ingestion** (eligible source) → **Lakeflow Connect** (`references/lakeflow-connect.md`).
+- **Remote compute that Databricks replaces** (EMR/Dataproc Spark, external Spark SQL) → migrate the
+  workload to a `notebook_task` / `sql_task` / pipeline on Databricks.
+- **Remote orchestration retained** (trigger an external job that stays external) → a `notebook_task`
+  driving the cloud SDK (boto3 / google-cloud / azure-sdk), with auth via `dbutils.secrets` or a UC
+  connection; preserve wait-for-completion only if the operator waited.
+- **Kafka consumption → Delta** → the **Lakeflow Connect managed Kafka connector** (continuous) where
+  eligible, else Structured Streaming in a notebook/pipeline.
+- **Messaging side-effects** (publish to SNS/SQS/Kafka, post to Slack/PagerDuty) → a `notebook_task`
+  using the SDK/webhook.
+
+| Family | Representative operators | Typical route |
+|---|---|---|
+| **AWS** | `AthenaOperator`, `EmrAddStepsOperator`/`Emr*`, `GlueJobOperator`, `BatchOperator`, `LambdaInvokeFunctionOperator`, `RedshiftDataOperator`, `SageMaker*`, `SqsPublishOperator`, `SnsPublishOperator` | Athena→JDBC/SDK (not federatable); Redshift→federation; EMR/Glue/Batch/Lambda/SageMaker→SDK notebook (retain remote) or migrate compute; SQS/SNS→SDK notebook |
+| **GCP** | `BigQueryInsertJobOperator`, `DataprocSubmitJobOperator`, `DataflowTemplatedJobStartOperator`, Cloud Run/Functions, `PubSub*` | BigQuery→federation or Connect; Dataproc→migrate to Databricks compute; Dataflow/Cloud Run/Functions→SDK notebook; Pub/Sub→SDK notebook or streaming |
+| **Azure** | `AzureDataFactoryRunPipelineOperator`, `AzureSynapseRunSparkBatchOperator`, Batch, Service Bus, MS Graph | ADF/Synapse→SDK notebook (retain) or migrate; Service Bus→SDK notebook |
+| **HTTP / files** | `HttpOperator`, `SFTPOperator`/`FTPOperator` | HTTP→`notebook_task` w/ `requests` (or the External-Orchestration HTTP operator when GA); SFTP/FTP→notebook w/ `paramiko`/`ftplib`, staging to a UC volume |
+| **Other SQL engines** | `TrinoOperator`/`PrestoOperator` (deprecated), `OracleOperator`/`MsSqlOperator`/`JdbcOperator` (use `SQLExecuteQueryOperator`), `SparkSqlOperator` | Oracle/MSSQL→federation; Trino/Presto→JDBC/SDK (not federatable); SparkSql→`sql_task`/notebook |
+| **Kafka** | `ConsumeFromTopicOperator`/`ProduceToTopicOperator` | Consume→managed Kafka connector (continuous) or Structured Streaming; Produce→SDK notebook |
+
+**Import-path honesty:** state an operator's import path as exact **only** when verified against the
+provider docs; otherwise describe it by pattern (`airflow.providers.<provider>.operators.<module>`) and
+tell the reader to confirm the module path. Many of these become native one-to-one targets under
+Lakeflow's External Orchestration (Python operator task) as it reaches GA — until then, notebook/SDK
+with a note is the faithful mapping.
+
+---
+
 ## Tier 3: Sensor to Trigger Mappings
 
 Airflow sensors that wait for external conditions map to DABs job-level triggers.
@@ -1604,7 +1793,7 @@ These operators have no direct DABs equivalent. Flag them in `MIGRATION_NOTES.md
 | Custom `BaseOperator` subclass | `notebook_task` | Extract operator logic into a notebook. Review `execute()` method. |
 | `HttpSensor` / `SimpleHttpOperator` | `notebook_task` wrapping `requests` | Use a notebook with the `requests` library for HTTP calls. |
 | `LivyOperator` | `spark_python_task` or `notebook_task` | Livy is unnecessary on Databricks; submit Spark code directly. See `hadoop-migration-guide.md`. |
-| `SqoopOperator` (import) | Lakeflow Connect pipeline | Managed RDBMS-to-lakehouse ingestion with CDC. Not a DABs task -- create a pipeline resource. See `hadoop-migration-guide.md`. |
+| `SqoopOperator` (import) | Lakeflow Connect pipeline | Managed RDBMS-to-lakehouse ingestion. A cursor `--incremental` (`append`/`lastmodified`) maps to **query-based** ingestion, NOT CDC; reserve CDC for a true log-based source. Not a DABs task -- create a pipeline resource. See `hadoop-migration-guide.md`. |
 | `SqoopOperator` (export) | `notebook_task` with JDBC write | `df.write.format("jdbc")` in a notebook. See `hadoop-migration-guide.md`. |
 | `PigOperator` | `notebook_task` or `sql_task` | Rewrite Pig Latin scripts as Spark SQL or PySpark. No Pig runtime on Databricks. |
 | `DbtCloudRunJobOperator` / `DbtCloudJobRunSensor` | `notebook_task` calling the dbt Cloud API, or full migration to dbt factory mode / `dbt_task` | dbt Cloud owns orchestration and compute — factory mode does not apply unless the dbt project itself migrates to Databricks. The notebook fallback needs dbt Cloud `account_id`/`job_id` and an API token in secrets. |

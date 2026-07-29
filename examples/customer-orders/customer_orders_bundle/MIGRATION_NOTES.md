@@ -31,7 +31,8 @@ Set these values before deployment:
 |---|---|
 | `S3KeySensor(bucket_key="orders/{{ ds }}/*.json")` | Converted to `trigger.file_arrival` on `${var.landing_path}`. File arrival triggers cannot use wildcard paths, so the trigger monitors the parent UC volume/external location path. |
 | `schedule="0 6 * * *"` plus `S3KeySensor` | Replaced by event-driven file arrival. If a fixed 06:00 UTC schedule is required, use a schedule instead of the trigger and move file readiness into task code. |
-| `catchup=False` | No direct DABs setting. Lakeflow Jobs trigger only on future file arrivals after deployment. |
+| `{{ ds }}` in `op_kwargs["run_date"]` | Mapped to the `run_date` job parameter (tasks use it as a logical/partition date, `WHERE order_date = :run_date`). Because this job is **file-arrival triggered**, there is no scheduled logical date, so `{{job.trigger.time}}` is not reliable; `run_date` defaults to `{{job.start_time.iso_date}}` as an approximation for the latest-arrival case. For strict correctness, derive the date from the arriving file path (`orders/<date>/…`); for exact historical windows, use backfill (below). If this were a **cron-scheduled** job instead, the default would be `{{job.trigger.time.iso_date}}` (the scheduled date). |
+| `catchup=False` | No backfill emitted. To replay history, use a native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs), overriding `run_date` with `{{backfill.iso_date}}` per replayed window (`run_date` is a job parameter for exactly this reason). |
 | `depends_on_past=False` | No equivalent emitted because the Airflow DAG explicitly disables this behavior. |
 | `email_on_retry=False` | No equivalent emitted. Job failure notification is preserved. |
 | `trigger_rule="none_failed_min_one_success"` | Mapped to `run_if: AT_LEAST_ONE_SUCCESS` on `publish_gold`. |

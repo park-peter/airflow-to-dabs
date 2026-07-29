@@ -1,0 +1,33 @@
+bundle:
+  name: orders-replication-lakeflow
+  engine: direct                     # required: this bundle defines a foreign catalog (resources.catalogs)
+  databricks_cli_version: ">=1.8.0"  # emits preview fields (ingest_from_uc_foreign_catalog, resources.catalogs)
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Destination Unity Catalog catalog for replicated + transformed tables.
+    default: main
+  schema:
+    description: Destination Unity Catalog schema.
+    default: commerce
+  snowflake_connection:
+    description: Name of the pre-existing UC connection to Snowflake (created out-of-band).
+    default: "<SNOWFLAKE_CONNECTION>"
+  snowflake_foreign_catalog:
+    description: Name of the UC foreign catalog federated from the Snowflake connection.
+    default: snowflake_analytics
+  snowflake_database:
+    description: Snowflake database the foreign catalog exposes (source-specific catalog option).
+    default: ANALYTICS
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    run_as:
+      service_principal_name: "<SERVICE_PRINCIPAL_NAME>"
