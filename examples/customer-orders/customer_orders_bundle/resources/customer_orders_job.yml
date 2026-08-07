@@ -115,7 +115,8 @@ resources:
             - task_key: full_validation
             - task_key: choose_validation
               outcome: "false"
-          run_if: AT_LEAST_ONE_SUCCESS
+          # Runs when no upstream failed, including when both upstreams skipped.
+          run_if: NONE_FAILED
           max_retries: 2
           min_retry_interval_millis: 300000
           timeout_seconds: 7200
