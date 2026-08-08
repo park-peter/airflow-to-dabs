@@ -98,7 +98,7 @@ The frontmatter is the discoverability layer:
 ```yaml
 name: airflow-to-dabs
 description: Converts Apache Airflow DAG files into Databricks Asset Bundles...
-version: 1.0.0
+version: 0.1.0
 author: park-peter
 repository: https://github.com/park-peter/airflow-to-dabs
 keywords:
