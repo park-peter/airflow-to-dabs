@@ -246,6 +246,43 @@ Common `default_args` fields and their DABs equivalents:
 
 ---
 
+## `trigger_rule` → `run_if` Mapping
+
+Lakeflow `run_if` takes exactly six values: `ALL_SUCCESS`, `ALL_DONE`, `NONE_FAILED`,
+`AT_LEAST_ONE_SUCCESS`, `ALL_FAILED`, `AT_LEAST_ONE_FAILED`. Airflow has more trigger rules than
+that, so some map exactly, some are approximations that must be recorded, and the rest have no
+faithful mapping and must be flagged.
+
+**Exact:**
+
+| Airflow `trigger_rule` | `run_if` |
+|---|---|
+| `all_success` (default) | `ALL_SUCCESS` (omit — it is the default) |
+| `all_done` | `ALL_DONE` |
+| `all_failed` | `ALL_FAILED` |
+| `one_success` | `AT_LEAST_ONE_SUCCESS` |
+| `one_failed` | `AT_LEAST_ONE_FAILED` |
+
+**Approximate — map, but record the behavioral delta in `MIGRATION_NOTES.md`:**
+
+| Airflow `trigger_rule` | `run_if` | Delta to record |
+|---|---|---|
+| `none_failed` | `NONE_FAILED` | Confirm skip semantics for the specific fan-in. |
+| `none_failed_min_one_success` | `NONE_FAILED` | Drops the "at least one succeeded" clause: the task **also runs when every upstream skipped**. `AT_LEAST_ONE_SUCCESS` is the wrong substitute — it allows the task to run while another upstream has failed. |
+| `none_failed_or_skipped` (deprecated alias) | `NONE_FAILED` | Same as `none_failed`. |
+
+**Flag — no faithful mapping; use a `condition_task` or surface for manual review:**
+
+`always` / `dummy` (Airflow runs regardless of upstream state, *including upstreams that never ran*;
+`ALL_DONE` still waits for upstreams to reach a terminal state), `none_skipped`, `all_skipped`,
+`one_done`, and the setup/teardown-specific rules. `all_skipped` mapped to the default inverts to its
+opposite condition — it would run only when upstreams *succeeded*.
+
+> An unrecognized or dynamically-computed `trigger_rule` must be flagged, never defaulted. A default
+> of `ALL_SUCCESS` is indistinguishable from a correctly-mapped `all_success`, which hides the loss.
+
+---
+
 ## Execution date (`{{ ds }}` / `execution_date`) semantics and backfill
 
 Airflow's `{{ ds }}`/`execution_date` has **no single Databricks equivalent** — its correct mapping

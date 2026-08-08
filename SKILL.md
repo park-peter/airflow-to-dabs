@@ -108,6 +108,7 @@ For schedule conversion, read `references/schedule-trigger-mapping.md` in this s
 - Convert `@continuous` to job-level `continuous` mode
 - For dataset/timetable schedules, map to `trigger.table_update` when deterministic, otherwise flag in `MIGRATION_NOTES.md`
 - For Airflow 3 `Asset` scheduling (`schedule=[Asset(...)]`, boolean asset expressions, `AssetOrTimeSchedule`), follow the Asset→UC-table resolution rule and boolean/time semantics in `references/schedule-trigger-mapping.md` — map to `trigger.table_update` only when the asset resolves to a UC table, else flag
+- Map each task's `trigger_rule` to `run_if` per the table in `references/schedule-trigger-mapping.md`. Five rules map exactly; `none_failed*` are **approximations** (map `none_failed_min_one_success` → `NONE_FAILED`, never `AT_LEAST_ONE_SUCCESS`, and record that the task can now also run when all upstreams skipped); `always`/`dummy`/`none_skipped`/`all_skipped`/`one_done` and setup/teardown rules have no faithful mapping → `condition_task` or flag. **Never default an unrecognized `trigger_rule` to `ALL_SUCCESS`** — that is indistinguishable from a correct mapping and hides the loss
 
 ### Phase 3: Generate the DABs Project
 

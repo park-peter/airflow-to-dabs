@@ -46,7 +46,7 @@ customer_orders_bundle/
 | `choose_validation` | `BranchPythonOperator` | `condition_task` | 2 | Simple boolean branch becomes a native Lakeflow condition task. |
 | `full_validation` | `PythonOperator` | `notebook_task` | 1 | Callable extracted to `src/full_validation.py`. |
 | `skip_full_validation` | `EmptyOperator` | Removed | 2 | False branch rewired directly to `publish_gold`. |
-| `publish_gold` | `PythonOperator` | `notebook_task` | 1 | Airflow trigger rule maps to `run_if: AT_LEAST_ONE_SUCCESS`. |
+| `publish_gold` | `PythonOperator` | `notebook_task` | 1 | `trigger_rule="none_failed_min_one_success"` approximated as `run_if: NONE_FAILED` (also runs if all upstreams skip — see MIGRATION_NOTES). |
 
 ## Presentation Talking Points
 

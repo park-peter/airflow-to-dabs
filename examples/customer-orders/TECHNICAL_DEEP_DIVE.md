@@ -455,8 +455,14 @@ The false branch is rewired directly to `publish_gold`:
     - task_key: full_validation
     - task_key: choose_validation
       outcome: "false"
-  run_if: AT_LEAST_ONE_SUCCESS
+  run_if: NONE_FAILED
 ```
+
+`trigger_rule="none_failed_min_one_success"` has no exact Lakeflow equivalent. `NONE_FAILED`
+preserves the "no upstream failed" guarantee and drops the "at least one succeeded" clause, so
+`publish_gold` also runs when every upstream skipped. `AT_LEAST_ONE_SUCCESS` keeps the opposite half
+and would allow the task to run while another upstream had failed. Full rule table:
+`references/schedule-trigger-mapping.md`.
 
 ### 13.5 Validation Performed
 

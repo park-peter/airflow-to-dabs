@@ -35,7 +35,7 @@ Set these values before deployment:
 | `catchup=False` | No backfill emitted. To replay history, use a native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs), overriding `run_date` with `{{backfill.iso_date}}` per replayed window (`run_date` is a job parameter for exactly this reason). |
 | `depends_on_past=False` | No equivalent emitted because the Airflow DAG explicitly disables this behavior. |
 | `email_on_retry=False` | No equivalent emitted. Job failure notification is preserved. |
-| `trigger_rule="none_failed_min_one_success"` | Mapped to `run_if: AT_LEAST_ONE_SUCCESS` on `publish_gold`. |
+| `trigger_rule="none_failed_min_one_success"` | `run_if: NONE_FAILED` on `publish_gold` — an approximation. Lakeflow has no combined predicate, so the "at least one succeeded" clause is dropped: `publish_gold` **also runs if every upstream skipped**. Confirm that over-run is acceptable, or gate with a `condition_task`. |
 | `EmptyOperator(skip_full_validation)` | Removed and rewired through the `choose_validation` condition false outcome. |
 
 ## Databricks Prerequisites
