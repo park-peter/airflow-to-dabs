@@ -1,7 +1,7 @@
 ---
 name: airflow-to-dabs
 description: Converts Apache Airflow DAG files into Databricks Asset Bundles (DABs) projects. Use when migrating Airflow DAGs to Databricks Lakeflow Jobs, converting Airflow operators to DABs task types, converting dbt-on-Airflow workloads (astronomer-cosmos DbtDag/DbtTaskGroup, dbt operators) to per-model Lakeflow jobs, or generating databricks.yml and job resource YAML from Airflow Python files. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, Airflow to Lakeflow, cosmos or dbt DAG migration, or DABs generation from Airflow.
-version: 0.1.0
+version: 0.2.0
 author: park-peter
 repository: https://github.com/park-peter/airflow-to-dabs
 keywords:
@@ -268,6 +268,7 @@ Progressive disclosure -- read these references as needed during each phase:
 - `assets/templates/dbt-profiles.yml.tmpl`: dbt profiles skeleton (host/token injected by the runner notebook)
 - `assets/templates/dbt-run-command.py.tmpl`: owned runner notebook (0.3.1 base + `dbt_vars` and per-target parse cache)
 - `assets/templates/dbt-tests.py.tmpl`: regression tests for the generated glue (selector exactness, `--vars` guard, fail-closed checks, pruning)
+- `providers/flowx-gap-resolver/PROFILE.md`: flowx contract-v1 provider mode. Use this profile rather than the standalone DAG-to-bundle workflow when flowx supplies a fingerprint-bound `GapEnvelope` for one leaf placeholder.
 
 ## Examples
 

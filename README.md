@@ -284,6 +284,17 @@ Recognizes the `airflow.sdk` and `apache-airflow-providers-standard` imports, ma
 
 Routes recurring source→Delta ingestion to a Lakeflow Connect managed-ingestion pipeline (Snowflake via a UC foreign catalog, `ingest_from_uc_foreign_catalog`) with a `pipeline_task` hop into the downstream transform. See [`examples/lakeflow-connect/`](examples/lakeflow-connect/) for a complete conversion.
 
+## flowx Provider Profile
+
+Release `v0.2.0` adds a machine-readable provider profile for flowx's fingerprint-bound Airflow gap workflow under [`providers/flowx-gap-resolver/`](providers/flowx-gap-resolver/). In this mode:
+
+- flowx owns DAG parsing, task identity, graph structure, policy, IR, and bundle packaging.
+- The provider receives one `GapEnvelope` and returns one constrained `AgenticResolution`.
+- A resolution can attach one notebook or SQL leaf payload, request user input, or defer when a faithful migration requires graph or resource changes.
+- The provider never reparses the DAG or generates a competing bundle.
+
+[`provider.json`](providers/flowx-gap-resolver/provider.json) declares contract compatibility, knowledge files, and fixture paths. [`PROFILE.md`](providers/flowx-gap-resolver/PROFILE.md) is the agent entrypoint. The paired JSON fixtures cover notebook, SQL, `needs_input`, and `deferred` outcomes and can be replayed by flowx as interoperability tests.
+
 ## Post-Generation Configuration
 
 The generated bundle uses placeholders for environment-specific values. Replace these before deploying, or provide the values in your prompt to skip this step (e.g., "use warehouse ID abc123 and spark version 15.4.x-scala2.12").
