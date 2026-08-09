@@ -1,0 +1,39 @@
+{
+  "contract_version": "1",
+  "gap_id": "4444444444444444",
+  "source": "airflow",
+  "pipeline_name": "orders",
+  "dag_capture_identity": "dag:orders.py:orders",
+  "capture_identity": "run_custom_python",
+  "task_key": "run_custom_python",
+  "task_path": ["tasks", 3],
+  "operator": "CustomPythonOperator",
+  "operator_fqn": "company.airflow.operators.CustomPythonOperator",
+  "source_file": "orders.py",
+  "source_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "baseline_report_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "task_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "graph_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "provider_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "request_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "finding_fingerprints": ["4444444444444444"],
+  "source_span": {"line": 30, "column": 4, "end_line": 35, "end_column": 5},
+  "raw_definition": {
+    "operator": "CustomPythonOperator",
+    "source": "run = CustomPythonOperator(task_id='run_custom_python', mode='full')"
+  },
+  "arguments": [
+    {"name": "task_id", "source_expression": "'run_custom_python'", "owner": "flowx", "preserved_by_flowx": true},
+    {"name": "mode", "source_expression": "'full'", "normalized_value": "full", "owner": "provider", "preserved_by_flowx": false}
+  ],
+  "upstream_task_keys": ["prepare"],
+  "downstream_task_keys": ["publish"],
+  "dag_settings": {"schedule": null, "parameters": [], "tags": {"source": "airflow"}},
+  "reason": {"code": "operator_placeholder", "message": "CustomPythonOperator has no deterministic mapping"},
+  "allowed_replacement_kinds": ["notebook", "sql", "spark_python"],
+  "knowledge_provider": {
+    "name": "airflow-to-dabs",
+    "version": "0.2.1",
+    "repository": "https://github.com/park-peter/airflow-to-dabs"
+  }
+}

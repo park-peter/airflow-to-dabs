@@ -288,6 +288,8 @@ Routes recurring source→Delta ingestion to a Lakeflow Connect managed-ingestio
 
 Release `v0.2.0` adds a machine-readable provider profile for flowx's fingerprint-bound Airflow gap workflow under [`providers/flowx-gap-resolver/`](providers/flowx-gap-resolver/). In this mode:
 
+Release `v0.2.1` extends that contract with task, graph, provider, and request hashes plus Spark Python leaf replacements and `needs_input` argument dispositions.
+
 - flowx owns DAG parsing, task identity, graph structure, policy, IR, and bundle packaging.
 - The provider receives one `GapEnvelope` and returns one constrained `AgenticResolution`.
 - A resolution can attach one notebook or SQL leaf payload, request user input, or defer when a faithful migration requires graph or resource changes.

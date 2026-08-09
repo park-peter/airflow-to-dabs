@@ -1,0 +1,33 @@
+{
+  "contract_version": "1",
+  "gap_id": "4444444444444444",
+  "status": "resolved",
+  "baseline_report_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "source_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "task_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "graph_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "provider_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "request_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "provider": {
+    "name": "airflow-to-dabs",
+    "version": "0.2.1",
+    "repository": "https://github.com/park-peter/airflow-to-dabs"
+  },
+  "model": {"name": "fixture-model", "runtime": "fixture"},
+  "argument_disposition": [
+    {"name": "task_id", "disposition": "preserved_by_flowx", "rationale": "Flowx preserves task identity."},
+    {"name": "mode", "disposition": "consumed", "rationale": "The mode is passed as a script argument."}
+  ],
+  "prerequisites": [],
+  "warnings": [],
+  "semantic_deltas": ["The custom operator runs as a Databricks Spark Python task."],
+  "replacement": {"kind": "spark_python", "file": "run_custom_python.py", "parameters": ["--mode", "full"]},
+  "generated_files": [
+    {
+      "path": "run_custom_python.py",
+      "language": "python",
+      "content": "import argparse\n\nparser = argparse.ArgumentParser()\nparser.add_argument('--mode', required=True)\nargs = parser.parse_args()\nprint(args.mode)\n",
+      "sha256": "6f05a8d42bf8a949dfa908c928713181e660e0b3a5e38534fbe01a33483f7a8c"
+    }
+  ]
+}
