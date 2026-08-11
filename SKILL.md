@@ -1,7 +1,7 @@
 ---
 name: airflow-to-dabs
 description: Converts Apache Airflow DAG files into Databricks Asset Bundles (DABs) projects. Use when migrating Airflow DAGs to Databricks Lakeflow Jobs, converting Airflow operators to DABs task types, converting dbt-on-Airflow workloads (astronomer-cosmos DbtDag/DbtTaskGroup, dbt operators) to per-model Lakeflow jobs, or generating databricks.yml and job resource YAML from Airflow Python files. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, Airflow to Lakeflow, cosmos or dbt DAG migration, or DABs generation from Airflow.
-version: 0.2.1
+version: 0.2.2
 author: park-peter
 repository: https://github.com/park-peter/airflow-to-dabs
 keywords:
@@ -39,7 +39,7 @@ Converts Apache Airflow DAG files into complete Databricks Asset Bundles (DABs) 
 
 Read the provided Airflow DAG file(s) and extract the following structure:
 
-1. **DAG metadata**: `dag_id`, `schedule_interval`/`schedule`, `default_args`, `catchup`, `tags`, `params`
+1. **DAG metadata**: `dag_id`, `schedule_interval`/`schedule`, `default_args`, `catchup`, `tags`, `params`, `dagrun_timeout`, `sla_miss_callback`, `max_consecutive_failed_dag_runs`
 2. **Task inventory**: For each task, capture:
    - `task_id` and operator class (e.g., `PythonOperator`, `BashOperator`)
    - Operator-specific parameters (`python_callable`, `bash_command`, `sql`, `application`, `json`, etc.)
@@ -109,6 +109,7 @@ For schedule conversion, read `references/schedule-trigger-mapping.md` in this s
 - For dataset/timetable schedules, map to `trigger.table_update` when deterministic, otherwise flag in `MIGRATION_NOTES.md`
 - For Airflow 3 `Asset` scheduling (`schedule=[Asset(...)]`, boolean asset expressions, `AssetOrTimeSchedule`), follow the Asset→UC-table resolution rule and boolean/time semantics in `references/schedule-trigger-mapping.md` — map to `trigger.table_update` only when the asset resolves to a UC table, else flag
 - Map each task's `trigger_rule` to `run_if` per the table in `references/schedule-trigger-mapping.md`. Five rules map exactly; `none_failed*` are **approximations** (map `none_failed_min_one_success` → `NONE_FAILED`, never `AT_LEAST_ONE_SUCCESS`, and record that the task can now also run when all upstreams skipped); `always`/`dummy`/`none_skipped`/`all_skipped`/`one_done` and setup/teardown rules have no faithful mapping → `condition_task` or flag. **Never default an unrecognized `trigger_rule` to `ALL_SUCCESS`** — that is indistinguishable from a correct mapping and hides the loss
+- Map a static positive `dagrun_timeout` to Job `timeout_seconds`. Treat explicit disabled policy (`depends_on_past=False`, email flags `False`, `sla_miss_callback=None`, `max_consecutive_failed_dag_runs=0`, empty `env`) as no-ops. Flag active cross-run dependencies, retry email, arbitrary SLA callbacks, automatic pause after repeated failures, dynamic timeouts, and non-empty task environments; do not substitute concurrency controls for prior-run or failure-history semantics.
 
 ### Phase 3: Generate the DABs Project
 
@@ -185,6 +186,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
 2. **`resources/<dag_id>_job.yml`**: One job resource file per DAG, each containing:
    - `schedule` or `trigger` from Phase 2
    - `email_notifications` from `default_args.email`
+   - Job-level `timeout_seconds` from a static positive DAG `dagrun_timeout`
    - `parameters` from DAG `params` and Jinja variables like `{{ ds }}` (map `{{ ds }}`/`execution_date` to a `run_date` job parameter — classify wall-clock vs logical/partition semantics; for a logical date on a cron/scheduled job default it `{{job.trigger.time.iso_date}}` so native backfill can override it, but on an event-triggered job derive the date from the event instead; ask the user when ambiguous — see `references/schedule-trigger-mapping.md`)
    - `job_clusters` with a shared cluster definition
    - `tasks` list with all mapped tasks, preserving the dependency graph via `depends_on`
@@ -212,7 +214,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
    - XCom patterns that need conversion to `dbutils.jobs.taskValues`
    - Airflow Connections that need Databricks secrets or UC connections
    - Airflow Variables that need bundle variables or job parameters
-   - `catchup=True` → the backfill expectation and that a native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) should override `run_date` with `{{backfill.iso_date}}`; `depends_on_past`, `sla` settings that have no DABs equivalent
+   - `catchup=True` → the backfill expectation and that a native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) should override `run_date` with `{{backfill.iso_date}}`; active `depends_on_past`, retry email, `sla`/`sla_miss_callback`, `max_consecutive_failed_dag_runs`, and non-empty `default_args.env` settings that need explicit replacement
    - Sensor-to-trigger conversions with notes on external location setup
    - **Cross-DAG dependency map**: which jobs reference other jobs via `run_job_task`, with resolved `${resources.jobs...}` substitutions
    - **Factory mode (when active)**: selector semantics (whole-manifest explosion vs any Airflow-side `--select`/`--exclude`), serverless-only note with the classic-cluster manual variation (`job_cluster_key` in `DbtTaskOptions`), the measured task count and the 1,000-task per-job limit (whether `BUNDLE_TESTS` was enabled and its retry-granularity tradeoff; if over the limit even bundled, the split-by-tag / sub-job / single-`dbt_task` options), retry mapping (apply Airflow retries to the YAML job's own tasks only; never on the `run_job_task` hop, which would re-run the whole dbt job — per-model reruns use Lakeflow repair), vars semantics (static vars from the committed `dbt_vars.json` at parse AND run time; runtime `dbt_vars` overrides are graph-invariant only and trigger a per-task re-parse since the parse cache is bypassed), `full_refresh` manual-review note, the classic-compute variation requiring dbt installed on the cluster with both dbt-databricks AND dbt-core pinned exactly, and the fail-closed guards (generated selectors that do not resolve to exactly their own node, checked with dbt's own matcher — covers equal FQNs, directory shadows, package-stripped overlaps, leaf shortcuts, versioned models, glob names; any FQN component — package, directory, or name — outside the `[A-Za-z0-9_.-]` allowlist, which dbt's selector grammar or the runner's shlex would misparse; and a belt-and-suspenders unique-task-key check, since 0.3.1 already guarantees readable keys `<resource>_<type>`/`<resource>_test` unique and ≤100 chars), the runner also rejecting a dbt command that carries its own `--vars` (vars must use the canonical `dbt_vars.json`/`dbt_vars` channel), `dbt_profiles/profiles.yml` values to fill (`<WAREHOUSE_ID>`, catalog/schema), and the `make setup && make manifest` prerequisite before the first deploy

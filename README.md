@@ -290,6 +290,8 @@ Release `v0.2.0` adds a machine-readable provider profile for flowx's fingerprin
 
 Release `v0.2.1` extends that contract with task, graph, provider, and request hashes plus Spark Python leaf replacements and `needs_input` argument dispositions.
 
+Release `v0.2.2` aligns the provider's runtime-policy guidance with flowx: static DAG run timeouts and failure notifications are preserved as Job settings, disabled policies are explicit no-ops, and unsupported cross-run, retry-email, SLA-callback, auto-pause, dynamic-timeout, and task-environment semantics remain blocking gaps.
+
 - flowx owns DAG parsing, task identity, graph structure, policy, IR, and bundle packaging.
 - The provider receives one `GapEnvelope` and returns one constrained `AgenticResolution`.
 - A resolution can attach one notebook or SQL leaf payload, request user input, or defer when a faithful migration requires graph or resource changes.

@@ -33,7 +33,7 @@
   "allowed_replacement_kinds": ["notebook", "sql", "spark_python"],
   "knowledge_provider": {
     "name": "airflow-to-dabs",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "repository": "https://github.com/park-peter/airflow-to-dabs"
   }
 }
