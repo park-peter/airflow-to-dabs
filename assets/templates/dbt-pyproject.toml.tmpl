@@ -1,7 +1,8 @@
 [project]
 name = "<BUNDLE_NAME>"
 version = "0.1.0"
-requires-python = ">=3.10"
+# Upper bound tracks databricks-dbt-factory, which requires <3.13.
+requires-python = ">=3.10,<3.13"
 # Used at bundle validate/deploy time by the PyDABs hook in resources/.
 dependencies = [
     "PyYAML>=6.0",
