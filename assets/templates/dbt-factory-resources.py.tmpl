@@ -42,8 +42,9 @@ from databricks_dbt_factory.TaskFactory import (
 from databricks_dbt_factory.Utils import read_dbt_manifest
 from dbt.graph.selector_methods import is_selected_node
 
-# dbt's own selector matcher is imported from the dbt-core version installed in
-# the bundle venv so the validation uses the same semantics as runtime dbt.
+# dbt's own selector matcher, imported from the dbt-core installed in the bundle venv so
+# validation uses runtime dbt's semantics. Its signature gained an is_versioned parameter,
+# so the arity decides which call form _call_is_selected_node uses.
 _SELECTOR_MATCHER_ACCEPTS_VERSIONED = len(signature(is_selected_node).parameters) >= 3
 
 # Resource key of the generated job. The YAML job references it as

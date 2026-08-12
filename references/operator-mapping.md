@@ -72,9 +72,9 @@ Applies across all tiers and to **any Airflow version** — deferrability has ex
 worker-efficiency mechanism (release a worker slot while waiting) and does **not** change what the task
 does, so **ignore the deferrability and map the underlying operation normally**:
 
-- Drop `deferrable=True` / the `*DeferrableOperator` suffix, triggerer configuration, and `poke_interval`.
+- Drop `deferrable=True` / the `*DeferrableOperator` suffix and triggerer configuration.
 - Keep task **timeout** and **retry** settings where they apply.
-- Generate **no polling** — Lakeflow owns waiting/queueing/triggers natively (sensors → job triggers).
+- **A sensor that converts to a job-level trigger generates no polling** and drops `poke_interval` — Lakeflow owns waiting/queueing/triggers natively. A sensor that stays a task (mid-graph, an arbitrary predicate, or a return value consumed downstream — see the Tier-3 sensor sections) keeps its polling loop and its `poke_interval` at every `mode`/`deferrable` setting.
 - Preserve **wait-for-completion** behavior **only** when Databricks submits to an external system via a
   notebook/wheel and the original operator waited; `wait_for_completion=False` → submit and return.
 - The `[operators] default_deferrable` config only affects operators that support switching modes — it
@@ -241,19 +241,28 @@ plain `notebook_task`:
 **Retained file-sensor discovery.** When an `@task.sensor` or `PythonSensor` returns a file collection consumed downstream, preserve the source callable's listing semantics instead of replacing it with a shallow directory read. **Recursive prefix listings must remain recursive**; for example, an object-store hook's `list_keys(prefix=...)` includes nested keys, while one `dbutils.fs.ls()` call returns only direct children. Generate a recursive walk or an equivalent paginated object-store/Auto Loader listing, retain the original glob/suffix filters, sorting, timeout, and size guard, and document any intentional scope change.
 
 ```python
+MAX_FILES = 10_000          # walk bound; raising past this is a failure
+LISTING_TIMEOUT_SECONDS = 300
+
 def list_files_recursive(root: str) -> list[str]:
-    pending = [root]
-    files = []
+    deadline = time.monotonic() + LISTING_TIMEOUT_SECONDS
+    pending, files = [root], []
     while pending:
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"Listing {root} exceeded {LISTING_TIMEOUT_SECONDS}s")
         for entry in dbutils.fs.ls(pending.pop()):
-            if entry.isDir():
+            # A directory entry's path ends in "/" on every dbutils implementation;
+            # entry.isDir() is absent from the SDK/Connect FileInfo.
+            if entry.path.endswith("/"):
                 pending.append(entry.path)
             else:
                 files.append(entry.path)
+                if len(files) > MAX_FILES:
+                    raise RuntimeError(f"{root} exceeds {MAX_FILES} files; narrow the prefix")
     return sorted(files)
 ```
 
-Call `list_files_recursive(source_path)` inside every polling attempt, then apply the source predicate (for example, `path.endswith(".json")`) and enforce the 48 KiB task-value limit before publishing the collection. Do not replace the helper with a one-level list comprehension over `dbutils.fs.ls(source_path)`. If direct object-store pagination is required to preserve metadata or scale, use the cloud SDK with secrets/identity instead of `dbutils.fs.ls()`.
+Call `list_files_recursive(source_path)` inside every polling attempt, then apply the source predicate (for example, `path.endswith(".json")`) and enforce the 48 KiB task-value limit before publishing the collection. Keep the walk in a `notebook_task` so `dbutils.fs` is available. Do not replace the helper with a one-level list comprehension over `dbutils.fs.ls(source_path)`. If direct object-store pagination is required to preserve metadata or scale, use the cloud SDK with secrets/identity instead of `dbutils.fs.ls()`.
 
 ---
 
@@ -577,9 +586,9 @@ COPY_OPTIONS ('force' = 'true')
 
 ### SQLExecuteQueryOperator
 
-`SQLExecuteQueryOperator` is connection-agnostic. Its **DABs task type is `sql_task` only when the
-resolved connection targets Databricks SQL**; otherwise apply the source-aware classification step
-above.
+**DABs task type:** `sql_task` when the resolved connection targets Databricks SQL; otherwise routed by the source-aware classification step above.
+
+`SQLExecuteQueryOperator` is connection-agnostic, so the resolved connection decides the mapping.
 
 - **Databricks SQL connection** → `sql_task` (the mapping shown below). If SQL is inline, extract it to a
   `.sql` file and reference via `sql_task.file.path`; if it references an existing Databricks SQL query,
@@ -986,6 +995,8 @@ branch = BranchPythonOperator(
 
 Preserve `target_lower`, `target_upper`, `follow_task_ids_if_true`, `follow_task_ids_if_false`, and `use_task_logical_date`. Generate a small evaluator notebook that computes an inclusive, timezone-aware range test and writes a string task value such as `in_range=true|false`; route both branch lists through one `condition_task`. Preserve Airflow's time-only rollover rule: when `target_lower` is later than `target_upper`, treat the upper bound as the following day. When `use_task_logical_date=True`, define a `logical_datetime` job parameter (default `{{job.trigger.time.iso_datetime}}` for a scheduled job and overridable with `{{backfill.iso_datetime}}`) rather than using a date-only value, so scheduled runs and native backfills preserve time-of-day semantics. When it is false, use `{{job.start_time.iso_datetime}}` as an evaluator parameter. A missing or dynamic range bound is manual review; never substitute today's date.
 
+`logical_datetime` is the full-precision form of the same logical instant the DAG-wide `run_date` parameter carries. When a DAG needs both, declare `logical_datetime` and derive `run_date` from its date part rather than defaulting the two independently, and give both the same backfill override so a replayed window moves them together. A `logical_datetime` left at the scheduled default while `run_date` is overridden evaluates the branch against the wrong window for the entire replay.
+
 ```yaml
 - task_key: evaluate_datetime_branch
   notebook_task:
@@ -1010,7 +1021,7 @@ Record any loss when Airflow branch IDs select more than two independent downstr
 
 **DABs task type:** evaluator `notebook_task` + `condition_task` + `depends_on.outcome`
 
-Preserve `week_day`, `use_task_logical_date`, DAG timezone, and both branch lists. The evaluator parses the logical `run_date` parameter when `use_task_logical_date=True`, or the job start timestamp otherwise, converts it to the DAG timezone, computes the weekday, and writes `matches_day=true|false`. Do not rewrite this branch as a cron schedule unless it is a root task and changing the entire DAG's run cadence is explicitly acceptable; a mid-DAG branch controls only part of the graph.
+Preserve `week_day`, `use_task_logical_date`, DAG timezone, and both branch lists. The evaluator parses the same logical parameter the DAG already declares — `logical_datetime` when the DAG has one, otherwise `run_date` — when `use_task_logical_date=True`, or the job start timestamp otherwise, converts it to the DAG timezone, computes the weekday, and writes `matches_day=true|false`. Do not rewrite this branch as a cron schedule unless it is a root task and changing the entire DAG's run cadence is explicitly acceptable; a mid-DAG branch controls only part of the graph.
 
 ```yaml
 - task_key: choose_weekday_branch
@@ -1666,7 +1677,7 @@ Airflow sensors that wait for external conditions map to DABs job-level triggers
 
 **DABs equivalent:** supported job-level trigger when the command is a provably equivalent root condition; otherwise a polling `notebook_task`
 
-`BashSensor` is an arbitrary shell predicate: exit code `0` succeeds and any other code is retried until timeout. Do not convert it to `file_arrival` merely because the command contains a path. Use a job-level file/table trigger only when the command is a root sensor, its output is unused, and its complete predicate is exactly a supported external arrival/update condition with a resolved location or table. Otherwise extract the command into a notebook loop using `subprocess.run`, preserving environment parameters, `poke_interval`, timeout, failure output, and the original success-code contract. A constant `exit 0` succeeds on the first probe; a constant nonzero command still waits to timeout. Preserve `soft_fail=False` by raising on timeout. For `soft_fail=True`, complete the poller with `sensor_satisfied=false` instead of failing and record that Lakeflow shows a success rather than Airflow's skipped state; if downstream logic distinguishes skipped from successful, flag the conversion and add an explicit condition path. Reject destructive or side-effecting predicates for automatic polling and flag them for redesign.
+`BashSensor` is an arbitrary shell predicate: exit code `0` succeeds and any other code is retried until timeout. Do not convert it to `file_arrival` merely because the command contains a path. Use a job-level file/table trigger only when the command is a root sensor, its output is unused, and its complete predicate is exactly a supported external arrival/update condition with a resolved location or table. Otherwise extract the command into a notebook loop using `subprocess.run`, preserving environment parameters, `poke_interval`, timeout, failure output, and the original success-code contract. A constant `exit 0` succeeds on the first probe; a constant nonzero command still waits to timeout. Preserve `soft_fail=False` by raising on timeout. `soft_fail=True` raises `AirflowSkipException`, and under the default `all_success` trigger rule that skip propagates to the whole downstream subgraph, so **always** gate on the result: complete the poller with `sensor_satisfied=false` and emit a `condition_task` on that value that gates every downstream task the sensor fed. Record the state change in `MIGRATION_NOTES.md` (Lakeflow shows a success plus a false condition where Airflow showed a skip). Reject destructive or side-effecting predicates for automatic polling and flag them for redesign.
 
 ```yaml
 - task_key: wait_for_shell_condition
@@ -1685,7 +1696,7 @@ The notebook task remains in the original graph; only a true root-trigger conver
 
 **DABs equivalent:** supported job-level trigger when the callable is a provably equivalent root condition; otherwise a polling `notebook_task`
 
-Extract and inspect the `python_callable`, `op_args`, and `op_kwargs`. Convert to `trigger.file_arrival` or `trigger.table_update` only when the root callable is wholly reducible to that resolved external event and its return/XCom value is unused. An arbitrary Python predicate, a mid-graph sensor, or a `PokeReturnValue` consumed downstream stays as a notebook that polls until truthy, preserving `poke_interval`, timeout, parameters, exception behavior, and any returned value through `dbutils.jobs.taskValues`. A callable that always returns true succeeds on its first probe; one that always returns false still waits to timeout. Preserve `soft_fail=False` by raising on timeout. For `soft_fail=True`, complete the poller with `sensor_satisfied=false` and document the Lakeflow-success versus Airflow-skipped state change; if downstream trigger rules depend on a skipped state, require an explicit condition path or manual redesign. Airflow context, Connections, and Variables must become explicit job parameters, required bundle variables, UC connections, or secrets; unresolved dependencies are manual review.
+Extract and inspect the `python_callable`, `op_args`, and `op_kwargs`. Convert to `trigger.file_arrival` or `trigger.table_update` only when the root callable is wholly reducible to that resolved external event and its return/XCom value is unused. An arbitrary Python predicate, a mid-graph sensor, or a `PokeReturnValue` consumed downstream stays as a notebook that polls until truthy, preserving `poke_interval`, timeout, parameters, exception behavior, and any returned value through `dbutils.jobs.taskValues`. A callable that always returns true succeeds on its first probe; one that always returns false still waits to timeout. Preserve `soft_fail=False` by raising on timeout. `soft_fail=True` raises `AirflowSkipException`, and under the default `all_success` trigger rule that skip propagates to the whole downstream subgraph, so **always** gate on the result: complete the poller with `sensor_satisfied=false` and emit a `condition_task` on that value that gates every downstream task the sensor fed. Record the state change in `MIGRATION_NOTES.md` (Lakeflow shows a success plus a false condition where Airflow showed a skip). Airflow context, Connections, and Variables must become explicit job parameters, required bundle variables, UC connections, or secrets; unresolved dependencies are manual review.
 
 ```yaml
 - task_key: wait_for_python_condition

@@ -1,0 +1,27 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Cross-surface and structural contract checks
+        run: make test-contracts
+
+  glue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install the example bundle's pinned dbt toolchain
+        working-directory: examples/dbt-cosmos/orders_analytics_bundle
+        run: uv sync --dev
+      - name: dbt glue regression tests
+        working-directory: examples/dbt-cosmos/orders_analytics_bundle
+        run: uv run pytest tests -q

@@ -49,7 +49,7 @@ Present a summary table before proceeding:
 
 Read `references/operator-mapping.md` in this skill's directory for the authoritative mapping table.
 
-**Source-aware classification (before the Tier tables).** Operator class alone does not fix the mapping — the connection does. Resolve `operator → connection type → intent → direction → destination → strategy`: Databricks SQL conn → `sql_task`; remote federatable DB read-only SELECT → Lakehouse Federation over a foreign catalog; remote DML/DDL → connector notebook or migrate target; recurring source→Delta ingestion (eligible source) → **Lakeflow Connect** (`references/lakeflow-connect.md`); cloud-storage files → Auto Loader; unsupported source → notebook/SDK + flag. **Fail-closed connection resolution**: auto-route only from operator/provider certainty, actual sanitized `conn_type`, or explicit user mapping — a `conn_id` name/host is a hint only; unresolved → manual review; never inline credentials. **Never emit a guessed executable default** for an unresolved catalog, schema, table, path, connection, job, warehouse, or other identifier; use a required bundle variable with no default or a deliberately invalid placeholder and record the required action in `MIGRATION_NOTES.md`. Athena/Trino/Presto are NOT federatable.
+**Source-aware classification (before the Tier tables).** Operator class alone does not fix the mapping — the connection does. Resolve `operator → connection type → intent → direction → destination → strategy`: Databricks SQL conn → `sql_task`; remote federatable DB read-only SELECT → Lakehouse Federation over a foreign catalog; remote DML/DDL → connector notebook or migrate target; recurring source→Delta ingestion (eligible source) → **Lakeflow Connect** (`references/lakeflow-connect.md`); cloud-storage files → Auto Loader; unsupported source → notebook/SDK + flag. **Fail-closed connection resolution**: auto-route only from operator/provider certainty, actual sanitized `conn_type`, or explicit user mapping — a `conn_id` name/host is a hint only; unresolved → manual review; never inline credentials. **Never emit a guessed executable default** for an unresolved catalog, schema, table, path, connection, job, warehouse, or other identifier; use a required bundle variable with no default or a deliberately invalid `<REQUIRED_...>` placeholder and record the required action in `MIGRATION_NOTES.md`. Athena/Trino/Presto are NOT federatable.
 
 **Snowflake & SQL checks.** No Snowflake managed connector — route by intent: read-only SQL → federation over a Snowflake foreign catalog; recurring Snowflake→Delta → query-based Lakeflow Connect via foreign catalog; DML/DDL → connector notebook or rewrite. `SnowflakeOperator`/`S3ToSnowflakeOperator` removed (use `SQLExecuteQueryOperator`/`CopyFromExternalStageToSnowflakeOperator`); recognize both `@task.snowpark` and `snowpark_task`. SQL **check** operators (`SQLColumnCheck`/`Table`/`Value`/`Threshold`/`Interval`, `Snowflake*Check`) → `sql_task` + `assert_true()`, preserving tolerance/interval/partition/null/dynamic-threshold or flag. `@task.sql` is generic SQL (`SQLExecuteQueryOperator`), NOT a check — route by connection + intent. See `references/operator-mapping.md`.
 
@@ -68,7 +68,7 @@ For each task:
    - File sensors -> `trigger.file_arrival`; set `queue.enabled: true`, make trigger and ingestion discovery recurse over the same root, preserve the original glob/suffix filter, and require an initial manual bootstrap run for existing files.
    - Table/SQL sensors -> `trigger.table_update`
    - External task sensors -> `depends_on`, `run_job_task`, or `trigger.table_update`
-   - `BashSensor` / `PythonSensor`: use a job trigger only when the complete root predicate is provably equivalent and its output is unused; otherwise retain polling with timeout, soft-fail, output, and side-effect semantics documented.
+   - `BashSensor` / `PythonSensor`: use a job trigger only when the complete root predicate is provably equivalent and its output is unused; otherwise retain polling with timeout, output, and side-effect semantics documented. A retained sensor keeps its `poke_interval` at every `mode`/`deferrable` setting. `soft_fail=True` always requires a `condition_task` on `sensor_satisfied` gating the downstream subgraph — Airflow's skip propagates under the default `all_success` trigger rule.
    - Retained file sensors must preserve source listing scope. For recursive source-prefix semantics, call `list_files_recursive()` on every polling attempt and never replace discovery with a single shallow `dbutils.fs.ls(root)` call.
 4. **Tier 4 (unsupported)**: Flag for manual review. Suggest `notebook_task` as fallback. Add to `MIGRATION_NOTES.md`.
 
@@ -124,7 +124,7 @@ Use `references/dab-schema-reference.md` for YAML schema. Use `assets/templates/
 4. **Compute check**: Serverless notebook tasks may omit ALL compute fields (`environment_key` optional); classic tasks need `job_cluster_key`/`existing_cluster_id`/`new_cluster`; referenced keys must be defined
 5. **Parameter check**: All `{{job.parameters.*}}` have corresponding entries in `parameters`
 6. **Retained sensor semantics check**: If the source listing is recursive, a retained sensor that only performs a single shallow `dbutils.fs.ls(root)` is a validation error; require directory traversal or equivalent pagination.
-7. **Bundle schema check**: Run `databricks bundle validate -t <target>` and resolve warnings/errors (if auth unavailable, run offline schema checks and report limitation). In factory mode, run step 8's setup/manifest sequence BEFORE this command
+7. **Bundle schema check**: Run `databricks bundle validate -t <target>` and resolve warnings/errors (if auth unavailable, run offline schema checks and report limitation). An unassigned required bundle variable is an expected validate failure: report it as a value the user must supply, never resolve it by adding a default. In factory mode, run step 8's setup/manifest sequence BEFORE this command
 8. **Factory-mode validation** (when active): `make setup` -> `make manifest` -> `databricks bundle validate -t dev` (validate executes the PyDABs hook; needs `.venv` + `target/dev/manifest.json`; per-target manifests — never reuse dev-parsed artifacts for prod). The Makefile recipe must fail unless `target/<target>/manifest.json` exists. The glue must inspect `is_selected_node` and call its legacy two-argument API or current three-argument API. Hook RuntimeErrors from fail-closed checks (selectors not resolving to exactly their own node checked with dbt's own matcher, any full-FQN component outside the [A-Za-z0-9_.-] allowlist, or a task-key collision) mean fall back to `dbt_task`; databricks-dbt-factory 0.3.1 selects every node by its full dot-joined FQN, derives readable keys (`<resource>_<type>`, bundled `<resource>_test`) guaranteed unique and ≤100 chars, and emits unit-test tasks natively (bundled test tasks keep --indirect-selection cautious when `BUNDLE_TESTS = True`), and both the glue and runner reject a command-level --vars (either spelling). Run `make task-count` and act on the 1,000-task limit per the Phase 2 check; the hook also raises above 1,000 tasks (fails at validate, not at the Jobs API). Any OTHER failure: preserve the resolved pins, fix only clearly version-independent causes (auth/profiles/parsing/schema) directly, otherwise stop and surface evidence. Do NOT auto-fall-back to `dbt_task` (a parse-time dbt incompatibility recurs under it anyway); repinning or fallback is a user decision. Automatic `dbt_task` fallback is only for the enumerated factory disqualifiers. Skipping is allowed only when `uv`/`dbt` is unavailable at THIS step (pins already resolved in Phase 3) — report the exact commands. Statically check `python.resources` entries resolve and `run_job_task` references match `JOB_KEY`s.
 9. **Present summary**: File list, task count, MIGRATION_NOTES items
 
@@ -147,3 +147,19 @@ Read these progressively as needed during each phase:
 - `assets/templates/dbt-Makefile.tmpl` — setup/manifest/validate/deploy targets (factory mode)
 - `assets/templates/dbt-profiles.yml.tmpl` — dbt profiles skeleton (factory mode)
 - `assets/templates/dbt-run-command.py.tmpl` — owned runner notebook (factory mode)
+
+<!-- Hardening contracts carried by this surface; tests/test_skill_contracts.py enforces the set. -->
+<!-- contract: branch-datetime-dayofweek -->
+<!-- contract: bundles-product-name -->
+<!-- contract: constant-sensors -->
+<!-- contract: dataset-or-time-schedule -->
+<!-- contract: dbt-selector-arity -->
+<!-- contract: file-arrival-queue -->
+<!-- contract: lifecycle-retry-disclosure -->
+<!-- contract: manifest-recipe-guard -->
+<!-- contract: mixed-schedule-manual -->
+<!-- contract: no-guessed-executable-default -->
+<!-- contract: recursive-listing -->
+<!-- contract: required-var-not-a-fix -->
+<!-- contract: retained-sensor-poke -->
+<!-- contract: soft-fail-condition-gate -->

@@ -1,6 +1,6 @@
 # airflow-to-dabs
 
-A coding agent skill that converts Apache Airflow DAGs into [Databricks Asset Bundles](https://docs.databricks.com/en/dev-tools/bundles/) (DABs) projects.
+A coding agent skill that converts Apache Airflow DAGs into [Databricks Declarative Automation Bundles](https://docs.databricks.com/en/dev-tools/bundles/) projects (formerly Databricks Asset Bundles; DABs).
 
 Given an Airflow DAG file, the agent produces a complete bundle project — `databricks.yml`, `resources/*.yml` job definitions, and extracted `src/` source files — ready for `databricks bundle deploy`.
 
@@ -35,8 +35,8 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 | Tier | Description | Examples |
 |------|-------------|----------|
 | **1 — Direct** | 1:1 mapping to a DABs task type | `PythonOperator`, `BashOperator`, `SparkSubmitOperator`, `DatabricksSubmitRunOperator`, `DatabricksRunNowOperator`, `DatabricksNotebookOperator`, `DatabricksSqlOperator`, `DatabricksSQLStatementsOperator`, `DatabricksCopyIntoOperator`, `SQLExecuteQueryOperator`, `DbtOperator`, `TriggerDagRunOperator`, `HiveOperator`, `SSHOperator` |
-| **2 — Semantic** | Requires reasoning about intent | cosmos `DbtDag`/`DbtTaskGroup`†, dynamic task mapping (`.expand()`), mapped task groups (`@task_group.expand()`), Snowflake operators (`SnowflakeSqlApiOperator`, `snowpark_task`), SQL data-quality checks (`SQLColumnCheckOperator`/`SQLTableCheckOperator`/…), cloud & messaging families (AWS/GCP/Azure/HTTP/SFTP/Kafka/Trino), `KubernetesPodOperator`, `DockerOperator`, `BranchPythonOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
-| **3 — Sensor** | Converted to job-level triggers | `S3KeySensor`, `DatabricksSqlSensor`, `DatabricksPartitionSensor`, `DatabricksSQLStatementsSensor`, `HdfsSensor`, `FileSensor`, `ExternalTaskSensor`, `SqlSensor`, `TimeSensor` |
+| **2 — Semantic** | Requires reasoning about intent | cosmos `DbtDag`/`DbtTaskGroup`†, dynamic task mapping (`.expand()`), mapped task groups (`@task_group.expand()`), Snowflake operators (`SnowflakeSqlApiOperator`, `snowpark_task`), SQL data-quality checks (`SQLColumnCheckOperator`/`SQLTableCheckOperator`/…), cloud & messaging families (AWS/GCP/Azure/HTTP/SFTP/Kafka/Trino), `KubernetesPodOperator`, `DockerOperator`, `BranchPythonOperator`, `BranchDateTimeOperator`, `BranchDayOfWeekOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
+| **3 — Sensor** | Converted to job-level triggers | `S3KeySensor`, `DatabricksSqlSensor`, `DatabricksPartitionSensor`, `DatabricksSQLStatementsSensor`, `HdfsSensor`, `FileSensor`, `ExternalTaskSensor`, `SqlSensor`, `TimeSensor`, `BashSensor`, `PythonSensor` |
 | **4 — Unsupported** | Flagged for manual review | Custom operators, `DbtCloudRunJobOperator`, `SqoopOperator`, `PigOperator`, XCom-heavy patterns |
 
 \* `DatabricksReposCreateOperator`, `DatabricksReposUpdateOperator`, and `DatabricksReposDeleteOperator` are infrastructure/repo-management operators with no DABs job task equivalent — they are omitted and noted in `MIGRATION_NOTES.md`.
@@ -286,18 +286,15 @@ Routes recurring source→Delta ingestion to a Lakeflow Connect managed-ingestio
 
 ## flowx Provider Profile
 
-Release `v0.2.0` adds a machine-readable provider profile for flowx's fingerprint-bound Airflow gap workflow under [`providers/flowx-gap-resolver/`](providers/flowx-gap-resolver/). In this mode:
-
-Release `v0.2.1` extends that contract with task, graph, provider, and request hashes plus Spark Python leaf replacements and `needs_input` argument dispositions.
-
-Release `v0.2.2` aligns the provider's runtime-policy guidance with flowx: static DAG run timeouts and failure notifications are preserved as Job settings, disabled policies are explicit no-ops, and unsupported cross-run, retry-email, SLA-callback, auto-pause, dynamic-timeout, and task-environment semantics remain blocking gaps.
+[`providers/flowx-gap-resolver/`](providers/flowx-gap-resolver/) holds a machine-readable provider profile for flowx's fingerprint-bound Airflow gap workflow. In this mode:
 
 - flowx owns DAG parsing, task identity, graph structure, policy, IR, and bundle packaging.
-- The provider receives one `GapEnvelope` and returns one constrained `AgenticResolution`.
-- A resolution can attach one notebook or SQL leaf payload, request user input, or defer when a faithful migration requires graph or resource changes.
+- The provider receives one `GapEnvelope` and returns one constrained `AgenticResolution`, carrying task, graph, provider, and request hashes.
+- A resolution can attach one notebook, SQL, or Spark Python leaf payload, request user input with per-argument dispositions, or defer when a faithful migration requires graph or resource changes.
+- Static DAG run timeouts and failure notifications are preserved as Job settings; disabled policies are explicit no-ops. Cross-run, retry-email, SLA-callback, auto-pause, dynamic-timeout, and task-environment semantics are blocking gaps.
 - The provider never reparses the DAG or generates a competing bundle.
 
-[`provider.json`](providers/flowx-gap-resolver/provider.json) declares contract compatibility, knowledge files, and fixture paths. [`PROFILE.md`](providers/flowx-gap-resolver/PROFILE.md) is the agent entrypoint. The paired JSON fixtures cover notebook, SQL, `needs_input`, and `deferred` outcomes and can be replayed by flowx as interoperability tests.
+[`provider.json`](providers/flowx-gap-resolver/provider.json) declares contract compatibility, knowledge files, and fixture paths. [`PROFILE.md`](providers/flowx-gap-resolver/PROFILE.md) is the agent entrypoint. The paired JSON fixtures cover notebook, SQL, Spark Python, `needs_input`, and `deferred` outcomes and can be replayed by flowx as interoperability tests.
 
 ## Post-Generation Configuration
 
@@ -316,6 +313,19 @@ The generated bundle uses placeholders for environment-specific values. Replace 
 | `<DEV_CATALOG>` / `<DEV_SCHEMA>` (factory mode) | `dbt_profiles/profiles.yml` → `catalog` / `schema` | `main` / `analytics` |
 
 > **Tip:** If you've already configured auth via `~/.databrickscfg` or `DATABRICKS_HOST`, you can remove `workspace.host` from targets entirely — the CLI picks it up automatically.
+
+## Repository Tests
+
+`make test` runs the skill's own checks, and CI runs the same targets on every push and pull request:
+
+```bash
+make test             # contract + dbt glue suites
+make test-contracts   # cross-surface rule coverage and structural checks
+make test-glue        # regression tests for the generated PyDABs dbt glue
+make validate         # schema-validate the checked-in example bundles
+```
+
+`tests/test_skill_contracts.py` matches each hardening rule through the `<!-- contract: id -->` anchors carried by `SKILL.md`, `AGENTS.md`, and `copilot-instructions.md`, so a rule dropped from one surface fails the build while rewording does not. Add an anchor to all three surfaces when adding a rule.
 
 ## Validation
 

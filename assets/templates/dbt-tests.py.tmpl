@@ -140,6 +140,14 @@ def test_exact_selectors_allow_versioned_pair():
     glue._assert_exact_selectors(m)  # versioned models are distinguishable
 
 
+def test_arity_probe_matches_the_installed_dbt_signature():
+    from inspect import signature
+
+    expected = len(signature(glue.is_selected_node).parameters) >= 3
+    assert glue._SELECTOR_MATCHER_ACCEPTS_VERSIONED is expected
+    assert glue._call_is_selected_node(["p", "staging", "stg"], "p.staging.stg", is_versioned=False)
+
+
 def test_selector_matcher_supports_legacy_two_argument_dbt_api(monkeypatch):
     calls = []
 

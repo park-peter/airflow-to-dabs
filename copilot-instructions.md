@@ -48,9 +48,9 @@ Present a summary table before proceeding:
 
 Use the embedded mapping rules below as authoritative in Copilot (do not rely on external file references).
 
-**Source-aware classification (apply before the Tier tables).** Operator class alone does not fix the mapping — the connection does. Resolve `operator -> connection type -> operation intent -> data direction -> destination contract -> strategy`: Databricks SQL connection -> `sql_task`; remote federatable DB with read-only SELECT -> Lakehouse Federation `sql_task` over a foreign catalog; remote DML/DDL -> connector notebook or migrate the target to Delta; recurring source->Delta ingestion from an eligible source -> Lakeflow Connect ingestion pipeline (see dbt/Lakeflow Connect rules); files in cloud storage -> Auto Loader; unsupported source -> notebook/SDK + flag. Federatable sources: MySQL, PostgreSQL, SQL Server, Oracle, Teradata, Redshift, Snowflake, BigQuery, Synapse, Salesforce Data 360, Databricks (Athena/Trino/Presto are NOT federatable). **Fail-closed connection resolution**: auto-route only from operator/provider certainty, the actual sanitized Airflow `conn_type`, or an explicit user `conn_id -> {type, target}` mapping; a `conn_id` name/host is a hint only; unresolved connections are manual review; never inline credentials (use a UC connection or `dbutils.secrets`). **Never emit a guessed executable default** for an unresolved catalog, schema, table, path, connection, job, warehouse, or other identifier; use a required bundle variable with no default or a deliberately invalid placeholder and record the required action in `MIGRATION_NOTES.md`.
+**Source-aware classification (apply before the Tier tables).** Operator class alone does not fix the mapping — the connection does. Resolve `operator -> connection type -> operation intent -> data direction -> destination contract -> strategy`: Databricks SQL connection -> `sql_task`; remote federatable DB with read-only SELECT -> Lakehouse Federation `sql_task` over a foreign catalog; remote DML/DDL -> connector notebook or migrate the target to Delta; recurring source->Delta ingestion from an eligible source -> Lakeflow Connect ingestion pipeline (see dbt/Lakeflow Connect rules); files in cloud storage -> Auto Loader; unsupported source -> notebook/SDK + flag. Federatable sources: MySQL, PostgreSQL, SQL Server, Oracle, Teradata, Redshift, Snowflake, BigQuery, Synapse, Salesforce Data 360, Databricks (Athena/Trino/Presto are NOT federatable). **Fail-closed connection resolution**: auto-route only from operator/provider certainty, the actual sanitized Airflow `conn_type`, or an explicit user `conn_id -> {type, target}` mapping; a `conn_id` name/host is a hint only; unresolved connections are manual review; never inline credentials (use a UC connection or `dbutils.secrets`). **Never emit a guessed executable default** for an unresolved catalog, schema, table, path, connection, job, warehouse, or other identifier; use a required bundle variable with no default or a deliberately invalid `<REQUIRED_...>` placeholder and record the required action in `MIGRATION_NOTES.md`.
 
-**Deferrable operators/sensors (any Airflow version, 2.2+ — not v3-specific).** `deferrable=True`, `*DeferrableOperator` variants, and `mode="reschedule"` sensors are a worker-efficiency mechanism that does not change what the task does. Ignore the deferrability and map the underlying operation: drop `deferrable`/triggerer/`poke_interval`, keep timeout/retries, generate no polling (sensors -> job triggers). Preserve wait-for-completion only when Databricks submits to an external system via a notebook and the original waited (`wait_for_completion=False` -> submit and return). `[operators] default_deferrable` only affects operators that support switching modes.
+**Deferrable operators/sensors (any Airflow version, 2.2+ — not v3-specific).** `deferrable=True`, `*DeferrableOperator` variants, and `mode="reschedule"` sensors are a worker-efficiency mechanism that does not change what the task does. Ignore the deferrability and map the underlying operation: drop `deferrable`/triggerer, keep timeout/retries. A sensor that converts to a job-level trigger generates no polling and drops `poke_interval`; a sensor that stays a task (mid-graph, arbitrary predicate, or output consumed downstream) keeps its polling loop and `poke_interval` at every `mode`/`deferrable` setting. Preserve wait-for-completion only when Databricks submits to an external system via a notebook and the original waited (`wait_for_completion=False` -> submit and return). `[operators] default_deferrable` only affects operators that support switching modes.
 
 #### Embedded operator mapping (authoritative)
 
@@ -101,7 +101,28 @@ Use the embedded mapping rules below as authoritative in Copilot (do not rely on
 - `ExternalTaskSensor` -> `run_job_task` or `depends_on` equivalent when deterministic
 - `BashSensor` -> a supported job trigger only when the entire root shell predicate is provably equivalent and its output is unused; otherwise retain a polling notebook and preserve exit-code, timeout, soft-fail, environment, and side-effect semantics
 - `PythonSensor` -> a supported job trigger only when the entire root callable is provably equivalent and its output is unused; otherwise retain a polling notebook and preserve arguments, returned task value, timeout, exception, soft-fail, and side-effect semantics
-- Remove only converted sensors from the task list. Retained file sensors must preserve direct-child versus recursive source listing scope; for recursive semantics, call `list_files_recursive()` on every poll and never replace discovery with a single shallow `dbutils.fs.ls(root)` call
+- Remove only converted sensors from the task list. Retained file sensors must preserve direct-child versus recursive source listing scope; for recursive semantics, call `list_files_recursive()` on every poll and never replace discovery with a single shallow `dbutils.fs.ls(root)` call. Emit this helper in the generated `notebook_task`, then apply the source predicate and enforce the 48 KiB task-value limit before publishing:
+
+```python
+MAX_FILES = 10_000
+LISTING_TIMEOUT_SECONDS = 300
+
+def list_files_recursive(root: str) -> list[str]:
+    deadline = time.monotonic() + LISTING_TIMEOUT_SECONDS
+    pending, files = [root], []
+    while pending:
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"Listing {root} exceeded {LISTING_TIMEOUT_SECONDS}s")
+        for entry in dbutils.fs.ls(pending.pop()):
+            # A directory entry's path ends in "/"; entry.isDir() is absent from the SDK/Connect FileInfo.
+            if entry.path.endswith("/"):
+                pending.append(entry.path)
+            else:
+                files.append(entry.path)
+                if len(files) > MAX_FILES:
+                    raise RuntimeError(f"{root} exceeds {MAX_FILES} files; narrow the prefix")
+    return sorted(files)
+```
 
 **Tier 4 (unsupported fallback):**
 
@@ -125,7 +146,7 @@ The mapping process follows four tiers:
    - File sensors -> `trigger.file_arrival` with `queue.enabled: true`, matching recursive ingestion scope and filters, plus an existing-file bootstrap action.
    - Table/SQL sensors -> `trigger.table_update`
    - External task sensors -> `depends_on`, `run_job_task`, or `trigger.table_update`
-   - `BashSensor` / `PythonSensor`: retain polling unless complete root-event equivalence is proven and output is unused; preserve timeout, soft-fail, return-value, and side-effect semantics.
+   - `BashSensor` / `PythonSensor`: retain polling unless complete root-event equivalence is proven and output is unused; preserve timeout, return-value, and side-effect semantics. A retained sensor keeps its `poke_interval` at every `mode`/`deferrable` setting. `soft_fail=True` always requires a `condition_task` on `sensor_satisfied` gating the downstream subgraph — Airflow's skip propagates under the default `all_success` trigger rule.
    - Retained recursive file discovery must traverse subdirectories or paginate; a single shallow `dbutils.fs.ls(root)` is invalid.
 4. **Tier 4 (unsupported)**: Flag for manual review. Suggest `notebook_task` as fallback. Add to `MIGRATION_NOTES.md`.
 
@@ -189,6 +210,22 @@ For Hadoop/on-prem migrations:
 4. **Compute check**: Serverless notebook tasks may omit ALL compute fields (`environment_key` optional); classic tasks need `job_cluster_key`/`existing_cluster_id`/`new_cluster`; referenced keys must be defined
 5. **Parameter check**: All `{{job.parameters.*}}` have corresponding entries in `parameters`
 6. **Retained sensor semantics check**: Compare each retained file sensor with its source callable. If source discovery is recursive, a notebook that performs only a single shallow `dbutils.fs.ls(root)` is a validation error; require directory traversal or equivalent pagination.
-7. **Bundle schema check**: Run `databricks bundle validate -t <target>` and resolve warnings/errors; when authentication is unavailable, run offline schema checks and report the limitation. In factory mode, complete step 8 first.
+7. **Bundle schema check**: Run `databricks bundle validate -t <target>` and resolve warnings/errors; when authentication is unavailable, run offline schema checks and report An unassigned required bundle variable is an expected validate failure: report it as a value the user must supply, never resolve it by adding a default. the limitation. In factory mode, complete step 8 first.
 8. **Factory-mode validation** (when active): `make setup` -> `make manifest` -> `databricks bundle validate -t dev`, in that order — validate executes the PyDABs hook and fails without `.venv` + `target/dev/manifest.json` (per-target manifests; never reuse dev artifacts for prod). The Makefile manifest recipe must fail unless `target/<target>/manifest.json` exists. The glue must inspect `is_selected_node` and call its legacy two-argument API or current three-argument API. Hook fail-closed RuntimeErrors (task-key collisions, non-exact selectors, disallowed FQN characters) mean fall back to `dbt_task`. Any OTHER failure: preserve the resolved pins, fix only clearly version-independent causes directly, otherwise stop and surface evidence. Do NOT auto-fall-back to `dbt_task` (a parse-time dbt incompatibility recurs under it anyway); repinning or fallback is a user decision. Automatic `dbt_task` fallback is only for the enumerated factory disqualifiers. Skipping is allowed only when `uv`/`dbt` is unavailable at THIS step (pins already resolved) — report the exact commands the user must run. Statically check `python.resources` entries resolve and `run_job_task` references match the `JOB_KEY`s.
 9. **Present summary**: File list, task count, MIGRATION_NOTES items
+
+<!-- Hardening contracts carried by this surface; tests/test_skill_contracts.py enforces the set. -->
+<!-- contract: branch-datetime-dayofweek -->
+<!-- contract: bundles-product-name -->
+<!-- contract: constant-sensors -->
+<!-- contract: dataset-or-time-schedule -->
+<!-- contract: dbt-selector-arity -->
+<!-- contract: file-arrival-queue -->
+<!-- contract: lifecycle-retry-disclosure -->
+<!-- contract: manifest-recipe-guard -->
+<!-- contract: mixed-schedule-manual -->
+<!-- contract: no-guessed-executable-default -->
+<!-- contract: recursive-listing -->
+<!-- contract: required-var-not-a-fix -->
+<!-- contract: retained-sensor-poke -->
+<!-- contract: soft-fail-condition-gate -->

@@ -12,8 +12,9 @@ resources:
       max_concurrent_runs: 1
 
       # Required for file-arrival jobs so runs wait at the concurrency limit.
-      # queue:
-      #   enabled: true
+      # Delete this block only for a job with no file_arrival trigger.
+      queue:
+        enabled: true
 
       # Schedule -- replace with actual cron or trigger
       # schedule:
