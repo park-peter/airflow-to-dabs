@@ -2,7 +2,6 @@
   "profile_schema_version": "1",
   "provider": {
     "name": "airflow-to-dabs",
-    "version": "0.2.2",
     "repository": "https://github.com/park-peter/airflow-to-dabs"
   },
   "interface": {
