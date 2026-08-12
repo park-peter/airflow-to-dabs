@@ -130,11 +130,21 @@ def test_checked_in_file_arrival_job_enables_queueing():
     assert job["queue"] == {"enabled": True}
 
 
-def test_broadened_ingestion_scope_is_disclosed_not_claimed_equivalent():
+def test_widened_ingestion_scope_is_disclosed_in_the_example_notes():
+    # The source sensor globs one partition (`orders/<ds>/*.json`) while the trigger and
+    # Auto Loader read the whole landing prefix, so the notes must name the scope
+    # difference and say `_ingest_run_date` labels the run instead of filtering it.
+    dag = _text("examples/customer-orders/airflow/customer_orders_dag.py")
+    ingestion = _text("examples/customer-orders/customer_orders_bundle/src/ingest_bronze.py")
     notes = _text("examples/customer-orders/customer_orders_bundle/MIGRATION_NOTES.md")
 
-    assert "**Broadened.**" in notes
-    assert "does not broaden ingestion" not in notes
+    assert 'bucket_key="orders/{{ ds }}/*.json"' in dag
+    assert '.option("pathGlobFilter", "*.json")' in ingestion
+
+    scope_row = next(line for line in notes.splitlines() if line.startswith("| File discovery scope"))
+    assert "basename" in scope_row
+    assert "not a partition filter" in scope_row
+    assert "_ingest_run_date" in scope_row
 
 
 def test_generated_job_template_enables_queueing_by_default():
