@@ -193,6 +193,10 @@ def test_bundled_mode_unions_each_test_selector_with_indirect_selection_empty():
         assert cmd.count("--select") >= 1
 
 
+@pytest.mark.skipif(
+    not (_BUNDLE_ROOT / "target" / "dev" / "manifest.json").exists(),
+    reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
+)
 def test_bundled_test_selectors_name_only_test_nodes():
     # Each bundled selector addresses a test node directly, so every --select carries a
     # resource_type:test term. A selector naming the resource instead would rely on
