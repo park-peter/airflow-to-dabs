@@ -148,8 +148,7 @@ in `references/schedule-trigger-mapping.md` (§ Timetable, Dataset, and Asset Sc
 
 - `schedule=[asset]` → `trigger.table_update` on the resolved table (single).
 - `schedule=[a, b]` (list = ALL) → `condition: ALL_UPDATED`; `a | b` → `ANY_UPDATED`; `a & b` → `ALL_UPDATED`.
-- `AssetOrTimeSchedule(...)` (time **and** asset) → **flag**; a single Lakeflow job takes a schedule
-  **or** a trigger, not both as a clean 1:1.
+- `AssetOrTimeSchedule(...)` (time **and** asset) → **flag and generate a manual job with neither arm**; a single Lakeflow job takes a schedule **or** a trigger, not both as a clean 1:1. Require the user to select the time arm, asset arm, or split jobs before adding automation.
 - An `Asset` URI is an arbitrary string, so map to a table **only** via explicit
   `extra={"databricks_table": "catalog.schema.table"}`, a user-supplied mapping, or the skill-local
   `x-databricks-table:` scheme — otherwise **flag**. Never infer a table from an arbitrary URI.

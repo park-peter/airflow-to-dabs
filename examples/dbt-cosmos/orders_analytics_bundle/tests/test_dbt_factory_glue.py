@@ -140,6 +140,38 @@ def test_exact_selectors_allow_versioned_pair():
     glue._assert_exact_selectors(m)  # versioned models are distinguishable
 
 
+def test_selector_matcher_supports_legacy_two_argument_dbt_api(monkeypatch):
+    calls = []
+
+    def legacy_is_selected_node(fqn, selector):
+        calls.append((fqn, selector))
+        return fqn == ["p", "staging", "stg"] and selector == "p.staging.stg"
+
+    monkeypatch.setattr(glue, "is_selected_node", legacy_is_selected_node)
+    monkeypatch.setattr(glue, "_SELECTOR_MATCHER_ACCEPTS_VERSIONED", False)
+
+    assert glue._call_is_selected_node(
+        ["p", "staging", "stg"], "p.staging.stg", is_versioned=False
+    )
+    assert calls == [(["p", "staging", "stg"], "p.staging.stg")]
+
+
+def test_selector_matcher_passes_version_flag_to_current_dbt_api(monkeypatch):
+    calls = []
+
+    def current_is_selected_node(fqn, selector, is_versioned):
+        calls.append((fqn, selector, is_versioned))
+        return is_versioned
+
+    monkeypatch.setattr(glue, "is_selected_node", current_is_selected_node)
+    monkeypatch.setattr(glue, "_SELECTOR_MATCHER_ACCEPTS_VERSIONED", True)
+
+    assert glue._call_is_selected_node(
+        ["p", "m", "v2"], "p.m.v2", is_versioned=True
+    )
+    assert calls == [(["p", "m", "v2"], "p.m.v2", True)]
+
+
 def test_exact_selectors_bundled_skips_equal_fqn_tests():
     # Equal-FQN tests would fail the per-test exactness scan, but in bundled mode they
     # are not selected individually — they run via their resource's `<resource>_test` task.

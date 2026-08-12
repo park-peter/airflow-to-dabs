@@ -1,6 +1,6 @@
 # Airflow DAG to DABs Conversion Examples
 
-Complete before/after examples showing real-world Airflow DAGs converted to Databricks Asset Bundles projects.
+Complete before/after examples showing real-world Airflow DAGs converted to Databricks Declarative Automation Bundles projects (formerly Databricks Asset Bundles; DABs).
 
 ---
 
@@ -390,6 +390,8 @@ resources:
 
       # S3KeySensor converted to job-level file_arrival trigger.
       # The sensor task is removed; the job starts when files arrive.
+      queue:
+        enabled: true
       trigger:
         file_arrival:
           url: s3://data-landing/incoming/
@@ -449,9 +451,13 @@ GROUP BY 1
 ```
 
 **Migration notes:**
+
 - `wait_for_upload` (S3KeySensor) converted to job-level `trigger.file_arrival`. The sensor task is removed from the task list.
 - `schedule_interval=None` is correct -- the job is now trigger-driven, not scheduled.
 - The `url` in `file_arrival` must point to a Unity Catalog external location. Ensure the S3 path is registered as an external location.
+- The trigger scans the prefix recursively. Configure Auto Loader or custom discovery to scan the same root recursively and retain the original `*.csv` filter in the ingestion task.
+- Queueing is enabled so arrivals detected at the concurrency limit wait rather than producing skipped runs.
+- Only new arrivals trigger the job. Run it once manually after deployment to bootstrap existing files, using Auto Loader `cloudFiles.includeExistingFiles=true` with a durable checkpoint when applicable.
 
 ---
 

@@ -429,6 +429,8 @@ Important files:
 The generated Lakeflow Job uses:
 
 ```yaml
+queue:
+  enabled: true
 trigger:
   pause_status: UNPAUSED
   file_arrival:
@@ -436,6 +438,8 @@ trigger:
     min_time_between_triggers_seconds: 300
     wait_after_last_change_seconds: 60
 ```
+
+Queueing prevents file-arrival runs from being skipped at the concurrency limit. The trigger and Auto Loader both discover files recursively under `${var.landing_path}`; Auto Loader retains the source `*.json` constraint with `pathGlobFilter`. Because only new arrivals trigger the job, deployment includes an initial manual run with `cloudFiles.includeExistingFiles=true` and a durable checkpoint to process files already present.
 
 The branch becomes:
 

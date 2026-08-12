@@ -23,19 +23,14 @@ import re
 import shlex
 from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
+from inspect import signature
 from pathlib import Path
 
 import yaml
-
-# dbt's own selector matcher, used to check generated selectors against the exact
-# semantics dbt will apply at run time. Provided by dbt-core in the bundle venv.
-from dbt.graph.selector_methods import is_selected_node
 from databricks.bundles.core import Bundle, Resources
 from databricks.bundles.jobs import Job
-
 from databricks_dbt_factory.DbtFactory import DbtFactory
 from databricks_dbt_factory.DbtTask import DbtTaskOptions, TaskType
-from databricks_dbt_factory.Utils import read_dbt_manifest
 from databricks_dbt_factory.TaskFactory import (
     DbtDependencyResolver,
     ModelTaskFactory,
@@ -43,6 +38,12 @@ from databricks_dbt_factory.TaskFactory import (
     SnapshotTaskFactory,
     TestTaskFactory,
 )
+from databricks_dbt_factory.Utils import read_dbt_manifest
+from dbt.graph.selector_methods import is_selected_node
+
+# dbt's own selector matcher is imported from the dbt-core version installed in
+# the bundle venv so the validation uses the same semantics as runtime dbt.
+_SELECTOR_MATCHER_ACCEPTS_VERSIONED = len(signature(is_selected_node).parameters) >= 3
 
 # Resource key of the generated job. The YAML job references it as
 # ${resources.jobs.orders_analytics_dbt_job.id}.
@@ -160,14 +161,23 @@ def _flat_fqn(fqn: list) -> list[str]:
     return [part for comp in fqn for part in str(comp).split(".")]
 
 
+def _call_is_selected_node(fqn: list, selector: str, is_versioned: bool) -> bool:
+    """Call the dbt-core selector matcher using the installed API signature."""
+    if _SELECTOR_MATCHER_ACCEPTS_VERSIONED:
+        return is_selected_node(fqn, selector, is_versioned)
+    return is_selected_node(fqn, selector)
+
+
 def _node_selector_matches(selector: str, fqn: list, is_versioned: bool) -> bool:
     """Exactly dbt's QualifiedNameSelectorMethod.node_is_match: full-FQN match via
     dbt's own is_selected_node (leaf shortcuts, versioned models, wildcard slurp,
     prefix semantics), then the package-stripped retry."""
-    if is_selected_node(fqn, selector, is_versioned):
+    if _call_is_selected_node(fqn, selector, is_versioned):
         return True
     unscoped = fqn[1:]
-    return bool(unscoped) and is_selected_node(unscoped, selector, is_versioned)
+    return bool(unscoped) and _call_is_selected_node(
+        unscoped, selector, is_versioned
+    )
 
 
 def _assert_exact_selectors(manifest: dict, *, bundle_tests: bool = BUNDLE_TESTS) -> None:
