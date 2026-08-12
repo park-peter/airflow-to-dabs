@@ -19,6 +19,7 @@ setup:
 manifest:
 	uv run dbt deps --profiles-dir dbt_profiles
 	uv run dbt parse --profiles-dir dbt_profiles --target $(TARGET) --target-path target/$(TARGET) --vars "$$(cat dbt_vars.json)"
+	test -f "target/$(TARGET)/manifest.json"
 
 validate: manifest
 	databricks bundle validate -t $(TARGET)

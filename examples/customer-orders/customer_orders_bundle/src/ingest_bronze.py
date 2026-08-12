@@ -22,6 +22,8 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
 query = (
     spark.readStream.format("cloudFiles")
     .option("cloudFiles.format", "json")
+    .option("pathGlobFilter", "*.json")
+    .option("cloudFiles.includeExistingFiles", "true")
     .option("cloudFiles.schemaLocation", schema_location)
     .option("cloudFiles.useManagedFileEvents", "true")
     .load(landing_path)

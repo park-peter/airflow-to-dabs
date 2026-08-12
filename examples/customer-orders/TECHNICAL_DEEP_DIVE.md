@@ -23,7 +23,7 @@ databricks bundle validate -t dev
 databricks bundle deploy -t dev
 ```
 
-In Databricks terms, the skill targets Lakeflow Jobs packaged with Databricks Asset Bundles, also referred to in newer Databricks documentation as Declarative Automation Bundles.
+In Databricks terms, the skill targets Lakeflow Jobs packaged with Databricks Declarative Automation Bundles (formerly Databricks Asset Bundles; DABs).
 
 ## 2. Why Use a Skill Instead of a Static Converter
 
@@ -93,23 +93,16 @@ This matters because agent context is limited. The skill keeps the always-loaded
 
 ### 5.1 Frontmatter
 
-The frontmatter is the discoverability layer:
+The frontmatter is the discoverability layer, and it carries exactly two fields:
 
 ```yaml
 name: airflow-to-dabs
-description: Converts Apache Airflow DAG files into Databricks Asset Bundles...
-version: 0.1.0
-author: park-peter
-repository: https://github.com/park-peter/airflow-to-dabs
-keywords:
-  - airflow
-  - databricks
-  - migration
-  - lakeflow
-  - dabs
+description: Converts Apache Airflow DAG files into Databricks Declarative Automation Bundles projects, formerly called Databricks Asset Bundles and commonly abbreviated DABs. Use when migrating Airflow DAGs to Databricks Lakeflow Jobs, ...
 ```
 
-The most important fields are `name` and `description`. The description is intentionally trigger-rich: it mentions Airflow migration, DAG conversion, Databricks Lakeflow Jobs, DABs, and generated `databricks.yml` output. That gives the agent multiple semantic hooks to decide when the skill applies.
+`name` is the skill identifier the harness registers. `description` is intentionally trigger-rich: it names Airflow migration, DAG conversion, Databricks Lakeflow Jobs, both the current and former bundle product names, cosmos/dbt DAG migration, and generated `databricks.yml` output, giving the agent multiple semantic hooks to decide when the skill applies.
+
+Git tags and releases are the version of record. Downstream consumers pin a release by tag, commit, and content digest.
 
 ### 5.2 Body
 
@@ -429,6 +422,8 @@ Important files:
 The generated Lakeflow Job uses:
 
 ```yaml
+queue:
+  enabled: true
 trigger:
   pause_status: UNPAUSED
   file_arrival:
@@ -436,6 +431,8 @@ trigger:
     min_time_between_triggers_seconds: 300
     wait_after_last_change_seconds: 60
 ```
+
+Queueing prevents file-arrival runs from being skipped at the concurrency limit. The trigger and Auto Loader both discover files recursively under `${var.landing_path}`; Auto Loader retains the source `*.json` constraint with `pathGlobFilter`. Because only new arrivals trigger the job, deployment includes an initial manual run with `cloudFiles.includeExistingFiles=true` and a durable checkpoint to process files already present.
 
 The branch becomes:
 

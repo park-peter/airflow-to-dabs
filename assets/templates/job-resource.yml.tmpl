@@ -11,6 +11,11 @@ resources:
         original_dag: <DAG_ID>
       max_concurrent_runs: 1
 
+      # Required for file-arrival jobs so runs wait at the concurrency limit.
+      # Delete this block only for a job with no file_arrival trigger.
+      queue:
+        enabled: true
+
       # Schedule -- replace with actual cron or trigger
       # schedule:
       #   quartz_cron_expression: "<QUARTZ_CRON>"
