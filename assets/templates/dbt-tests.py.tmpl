@@ -69,143 +69,7 @@ def test_carries_vars_flag(argv, expected):
 
 
 # --------------------------------------------------------------------------------------
-# _assert_exact_selectors — each generated fqn selector must resolve to exactly its node
-# under dbt's own matching semantics (imported is_selected_node).
-# --------------------------------------------------------------------------------------
-
-def test_exact_selectors_pass_on_distinct_nodes():
-    m = _manifest(
-        {
-            "model.p.staging.stg": _model("stg", ["p", "staging", "stg"]),
-            "model.p.marts.fct": _model("fct", ["p", "marts", "fct"]),
-        }
-    )
-    glue._assert_exact_selectors(m)  # no raise
-
-
-def test_exact_selectors_reject_equal_fqns():
-    # Two tests with identical FQN (e.g. same custom test name) — distinct keys, same selector.
-    m = _manifest(
-        {
-            "test.p.dup": _test("dup", ["p", "staging", "dup"]),
-            "test.other.dup": _test("dup", ["p", "staging", "dup"]),
-        }
-    )
-    with pytest.raises(RuntimeError, match="not exact"):
-        glue._assert_exact_selectors(m)
-
-
-def test_exact_selectors_reject_prefix_shadow():
-    # A model named 'marts' shadows models under the marts/ directory (prefix match).
-    m = _manifest(
-        {
-            "model.p.marts": _model("marts", ["p", "marts"]),
-            "model.p.marts.fct": _model("fct", ["p", "marts", "fct"]),
-        }
-    )
-    with pytest.raises(RuntimeError, match="not exact"):
-        glue._assert_exact_selectors(m)
-
-
-def test_exact_selectors_reject_package_stripped_overlap():
-    # ['root','a'] vs ['dep','root','a'] — dbt retries selection with the package stripped.
-    m = _manifest(
-        {
-            "model.root.a": _model("a", ["root", "a"]),
-            "model.dep.a": _model("a", ["dep", "root", "a"]),
-        }
-    )
-    with pytest.raises(RuntimeError, match="not exact"):
-        glue._assert_exact_selectors(m)
-
-
-def test_exact_selectors_reject_disallowed_characters():
-    m = _manifest({"model.p.bad": _model("foo,bar", ["p", "foo,bar"])})
-    with pytest.raises(RuntimeError, match="unsafe"):
-        glue._assert_exact_selectors(m)
-
-
-def test_exact_selectors_allow_hyphenated_path():
-    m = _manifest({"model.p.stg": _model("stg", ["p", "my-dir", "stg"])})
-    glue._assert_exact_selectors(m)  # hyphen is allowed in path components
-
-
-def test_exact_selectors_allow_versioned_pair():
-    m = _manifest(
-        {
-            "model.p.m.v1": _model("m", ["p", "m", "v1"], version=1),
-            "model.p.m.v2": _model("m", ["p", "m", "v2"], version=2),
-        }
-    )
-    glue._assert_exact_selectors(m)  # versioned models are distinguishable
-
-
-def test_arity_probe_matches_the_installed_dbt_signature():
-    from inspect import signature
-
-    expected = len(signature(glue.is_selected_node).parameters) >= 3
-    assert glue._SELECTOR_MATCHER_ACCEPTS_VERSIONED is expected
-    assert glue._call_is_selected_node(["p", "staging", "stg"], "p.staging.stg", is_versioned=False)
-
-
-def test_selector_matcher_supports_legacy_two_argument_dbt_api(monkeypatch):
-    calls = []
-
-    def legacy_is_selected_node(fqn, selector):
-        calls.append((fqn, selector))
-        return fqn == ["p", "staging", "stg"] and selector == "p.staging.stg"
-
-    monkeypatch.setattr(glue, "is_selected_node", legacy_is_selected_node)
-    monkeypatch.setattr(glue, "_SELECTOR_MATCHER_ACCEPTS_VERSIONED", False)
-
-    assert glue._call_is_selected_node(
-        ["p", "staging", "stg"], "p.staging.stg", is_versioned=False
-    )
-    assert calls == [(["p", "staging", "stg"], "p.staging.stg")]
-
-
-def test_selector_matcher_passes_version_flag_to_current_dbt_api(monkeypatch):
-    calls = []
-
-    def current_is_selected_node(fqn, selector, is_versioned):
-        calls.append((fqn, selector, is_versioned))
-        return is_versioned
-
-    monkeypatch.setattr(glue, "is_selected_node", current_is_selected_node)
-    monkeypatch.setattr(glue, "_SELECTOR_MATCHER_ACCEPTS_VERSIONED", True)
-
-    assert glue._call_is_selected_node(
-        ["p", "m", "v2"], "p.m.v2", is_versioned=True
-    )
-    assert calls == [(["p", "m", "v2"], "p.m.v2", True)]
-
-
-def test_exact_selectors_bundled_skips_equal_fqn_tests():
-    # Equal-FQN tests would fail the per-test exactness scan, but in bundled mode they
-    # are not selected individually — they run via their resource's `<resource>_test` task.
-    m = _manifest(
-        {
-            "test.p.dup": _test("dup", ["p", "staging", "dup"]),
-            "test.other.dup": _test("dup", ["p", "staging", "dup"]),
-        }
-    )
-    glue._assert_exact_selectors(m, bundle_tests=True)  # no raise: test nodes excluded
-
-
-def test_exact_selectors_bundled_still_catches_model_collision():
-    # Bundling excludes only test nodes; model/seed/snapshot selectors are still checked.
-    m = _manifest(
-        {
-            "model.p.marts": _model("marts", ["p", "marts"]),
-            "model.p.marts.fct": _model("fct", ["p", "marts", "fct"]),
-        }
-    )
-    with pytest.raises(RuntimeError, match="not exact"):
-        glue._assert_exact_selectors(m, bundle_tests=True)
-
-
-# --------------------------------------------------------------------------------------
-# _assert_unique_task_keys — belt-and-suspenders: 0.3.1 guarantees unique keys, so this
+# _assert_unique_task_keys — belt-and-suspenders: the factory guarantees unique keys, so this
 # only trips on a factory regression that emits two tasks with the same key.
 # --------------------------------------------------------------------------------------
 
@@ -291,9 +155,14 @@ def test_build_tasks_end_to_end():
             assert dep["task_key"] in keys       # no dangling deps
         for cmd in _commands_of(task):
             if "--select" in cmd:
-                # 0.3.1 selects by full dot-joined FQN (no `fqn:` prefix); the package
-                # segment is always present, so a bare-name selector would have no dot.
-                assert re.search(r"--select\s+\S+\.\S+", cmd)   # dotted FQN, not a bare name
+                # The factory intersects every independent fact about the node: its fqn plus
+                # package, file, and resource_type terms, comma-joined (dbt's AND).
+                selector = re.search(r"--select\s+(\S+)", cmd).group(1)
+                terms = selector.split(",")
+                assert any(t.startswith("fqn:") for t in terms)
+                assert any(t.startswith("package:") for t in terms)
+                assert any(t.startswith("file:") for t in terms)
+                assert any(t.startswith("resource_type:") for t in terms)
                 assert "--vars" not in cmd                        # no command-level vars
 
 
@@ -311,54 +180,36 @@ def test_build_tasks_rejects_extra_vars(monkeypatch):
     not (_BUNDLE_ROOT / "target" / "dev" / "manifest.json").exists(),
     reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
 )
-def test_bundled_mode_collapses_tests_and_preserves_cautious():
-    # Bundled test tasks are the `dbt test ... --indirect-selection cautious` commands
-    # (0.3.1 keys them `<resource>_test`; match on the command, not the key name).
+def test_bundled_mode_unions_each_test_selector_with_indirect_selection_empty():
+    # Bundling repeats --select once per test node (dbt unions repeated flags)
+    # and pins --indirect-selection empty so only the named tests run. Match on the
+    # command rather than the task key.
     tasks = glue._build_tasks("dev", bundle_tests=True)
-    bundled = [
-        c
-        for t in tasks
-        for c in _commands_of(t)
-        if "dbt test" in c and "--indirect-selection cautious" in c
-    ]
+    bundled = [c for t in tasks for c in _commands_of(t) if "dbt test" in c]
+
     assert bundled, "expected at least one bundled test task in bundled mode"
     for cmd in bundled:
-        assert "--indirect-selection empty" not in cmd  # bundle selection not narrowed
+        assert "--indirect-selection empty" in cmd
+        assert cmd.count("--select") >= 1
 
 
-@pytest.mark.skipif(
-    not (_BUNDLE_ROOT / "target" / "dev" / "manifest.json").exists(),
-    reason="target/dev/manifest.json is git-ignored; run `make manifest` first",
-)
-def test_bundled_test_selectors_resolve_to_the_resource():
-    # The invariant that actually matters: each bundled test task's select must resolve
-    # to its resource under dbt's own matcher. databricks-dbt-factory 0.3.1 selects by
-    # the resource's full dot-joined FQN (with --indirect-selection cautious, which sweeps
-    # in that resource's tests); confirm it resolves using the same matcher the glue's
-    # exactness check imports. Bundled test tasks are matched by their cautious command,
-    # not a task-key prefix (0.3.1 keys them `<resource>_test`).
-    manifest = glue.read_dbt_manifest(
-        str(_BUNDLE_ROOT / "target" / "dev" / "manifest.json")
-    )
-    resources = {  # resource full name (dotted fqn) -> is_versioned
-        ".".join(n["fqn"]): (n.get("version") is not None)
-        for n in manifest["nodes"].values()
-        if n["resource_type"] in ("model", "seed", "snapshot")
-    }
+def test_bundled_test_selectors_name_only_test_nodes():
+    # Each bundled selector addresses a test node directly, so every --select carries a
+    # resource_type:test term. A selector naming the resource instead would rely on
+    # indirect selection, which the emitted command disables.
     tasks = glue._build_tasks("dev", bundle_tests=True)
     checked = 0
     for task in tasks:
         for cmd in _commands_of(task):
-            if "dbt test" not in cmd or "--indirect-selection cautious" not in cmd:
+            if "dbt test" not in cmd:
                 continue
-            m = re.search(r"--select\s+(\S+)", cmd)
-            assert m, f"bundled test command has no --select: {cmd!r}"
-            selector = m.group(1)
-            assert any(
-                glue._node_selector_matches(selector, fqn.split("."), versioned)
-                for fqn, versioned in resources.items()
-            ), f"bundled selector {selector!r} matches no resource node"
-            checked += 1
+            selectors = re.findall(r"--select\s+(\S+)", cmd)
+            assert selectors, f"bundled test command has no --select: {cmd!r}"
+            for selector in selectors:
+                assert "resource_type:test" in selector.split(","), (
+                    f"bundled selector {selector!r} does not name a test node"
+                )
+                checked += 1
     assert checked, "no bundled test selectors were checked"
 
 

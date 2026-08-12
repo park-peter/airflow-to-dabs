@@ -33,7 +33,7 @@ orders_analytics_bundle/
   src/
     ingest_orders.py                 # extracted from PythonOperator
     publish_metrics.py               # extracted from PythonOperator
-    run_dbt_command.py               # owned runner (0.3.1 base + dbt_vars / per-target cache)
+    run_dbt_command.py               # owned runner (packaged-runner base + dbt_vars / per-target cache)
   tests/test_dbt_factory_glue.py     # regression tests for the PyDABs glue
   MIGRATION_NOTES.md
 ```
@@ -67,7 +67,7 @@ model_stg_orders ──► test_unique_order_id ──────────�
   the task graph tracks the dbt project automatically as models are added.
 - Serverless tasks use a pre-built base environment pinned to the locally tested
   dbt-databricks AND dbt-core versions — no per-task pip install. Pinning dbt-core
-  too keeps the runtime matcher identical to the one the glue checks against.
+  too keeps the runtime identical to the version that produced the parse cache.
 
 ## Local QA
 

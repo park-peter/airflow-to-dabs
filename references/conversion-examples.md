@@ -798,8 +798,7 @@ def _build_tasks(target: str) -> list[dict]:
     factories = {t: classes[t](resolver, options, f"--target {target}") for t in FACTORY_TYPES}
     factory = DbtFactory(factories, bundle_tests=BUNDLE_TESTS)  # True collapses tests per resource
     manifest = read_dbt_manifest(f"target/{target}/manifest.json")  # per-target
-    _assert_exact_selectors(manifest, bundle_tests=BUNDLE_TESTS)  # each node's FQN -> its own node (dbt's matcher); skips tests when bundling
-    tasks = factory.create_tasks(manifest)     # 0.3.1 selects by full FQN; unit tests emitted natively
+    tasks = factory.create_tasks(manifest)     # intersects fqn:/package:/file: terms; unit tests emitted natively
     _assert_unique_task_keys(tasks)            # guarantees unique keys (belt-and-suspenders)
     return _prune_dangling_deps(tasks)         # drop deps on omitted node types; _assert_within_task_limit (1,000-task cap)
 
@@ -827,7 +826,7 @@ For a 5-node dbt project (1 seed, 3 models, 2 tests) this generates a 6-task job
 - No `RenderConfig(select=...)` in the source, so whole-project semantics are unchanged. With selectors present, confirm before converting (factory explodes the entire manifest) or fall back to a single `dbt_task`.
 - `DatabricksTokenProfileMapping` replaced by `dbt_profiles/profiles.yml` with host/token injected by the runner notebook at run time — no Airflow connection.
 - `default_args.retries` applied to YAML-job notebook tasks; per-model reruns in the dbt job use Lakeflow repair.
-- databricks-dbt-factory 0.3.1 selects every node by its full dot-joined FQN and emits unit-test tasks natively; the glue validates each selector resolves exact against dbt's own matcher and fails closed on non-exact selectors and any FQN component outside `[A-Za-z0-9_.-]`. Vars go only through `dbt_vars.json` / the `dbt_vars` parameter — a command-level `--vars` (either spelling) is rejected by both the glue and the runner.
+- databricks-dbt-factory addresses every node with an intersected `fqn:`/`package:`/`file:`/`resource_type:` selector that it validates against dbt's grammar, and emits unit-test tasks natively; the glue prunes dangling deps, confirms task keys are unique, and fails closed above the 1,000-task limit. Vars go only through `dbt_vars.json` / the `dbt_vars` parameter — a command-level `--vars` (either spelling) is rejected by both the glue and the runner.
 - `dbt_serverless_env.yaml` pins the installed `dbt-databricks` and `dbt-core` exactly (dbt-core parity keeps the runtime matcher identical to the one the glue checks against).
 - Deploy prerequisite: `make setup && make manifest` (venv + `dbt parse` into `target/dev/`) before `databricks bundle validate`/`deploy`; for prod, `make deploy TARGET=prod` — manifests are per-target because parse bakes in profile-resolved catalog/schema.
 

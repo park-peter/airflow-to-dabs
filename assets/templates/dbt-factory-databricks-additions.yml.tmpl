@@ -4,8 +4,8 @@
 # generated job via ${resources.jobs.<DAG_ID>_dbt_job.id}.
 #
 # Requires the venv from `make setup` (databricks-bundles + databricks-dbt-factory)
-# and a manifest from `make manifest`. Verified with databricks-bundles 1.0.0-1.6.0
-# on Databricks CLI v1.7.0.
+# and a manifest from `make manifest`, with the databricks-bundles pin in pyproject.toml
+# and a Databricks CLI that supports PyDABs.
 
 # PyDABs: the Databricks CLI calls each listed function during bundle
 # validate/deploy to build resources defined in Python. Add one entry per

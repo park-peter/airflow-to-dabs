@@ -37,10 +37,10 @@ REQUIRED_CONTRACTS = frozenset(
         "soft-fail-condition-gate",
         "retained-sensor-poke",
         "lifecycle-retry-disclosure",
-        "dbt-selector-arity",
         "manifest-recipe-guard",
         "required-var-not-a-fix",
         "dataset-or-time-schedule",
+        "dbt-intersected-selector",
     }
 )
 

@@ -1,6 +1,6 @@
 # Databricks notebook source
 #
-# Based on the run_dbt_command.py shipped in databricks-dbt-factory==0.3.1,
+# Based on the run_dbt_command.py shipped in databricks-dbt-factory,
 # extended with:
 #   - dbt_vars: JSON object passed as a job parameter; the SOLE vars channel.
 #     Appended to each dbt command as ["--vars", <json>] argv (never
@@ -17,6 +17,7 @@ import os
 import shlex
 import shutil
 import tempfile
+from urllib.parse import urlparse
 
 from dbt.cli.main import dbtRunner
 
@@ -55,7 +56,11 @@ if dbt_vars_raw:
 
 ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
 os.environ["DBT_ACCESS_TOKEN"] = ctx.apiToken().get()
-os.environ["DBT_HOST"] = ctx.apiUrl().get()
+# dbt's host must be a bare hostname, while apiUrl() returns a full URL. Keep only the
+# netloc so "https://my-workspace.databricks.com/" yields "my-workspace.databricks.com".
+_api_url = ctx.apiUrl().get()
+_api_parsed = urlparse(_api_url)
+os.environ["DBT_HOST"] = _api_parsed.netloc or _api_parsed.path.strip("/")
 
 # chdir to the dbt project so dbt runs from inside it. Relative `project_directory` is
 # resolved against this notebook's own workspace location — the same anchor native
@@ -140,8 +145,8 @@ try:
             command_str = command_str[4:]
 
         # shlex.split parses quoted option values (e.g. --warn-error-options
-        # '{...}') the same way a shell would. Selector characters are already
-        # constrained to a safe allowlist at generation time.
+        # '{...}') the same way a shell would. databricks-dbt-factory shell-quotes
+        # each selector when it builds the command.
         args = shlex.split(command_str)
 
         # Vars must flow through the canonical dbt_vars mechanism (dbt_vars.json /

@@ -13,18 +13,16 @@ through the `dbt_vars` job parameter.
 Save as: resources/<DAG_MODULE>_dbt_job.py (one module per dbt-bearing DAG).
 <DAG_MODULE> is the dag_id sanitized to a valid Python identifier (replace every
 character outside [a-zA-Z0-9_] with "_"; e.g. sales.daily -> sales_daily).
-Verified against databricks-dbt-factory==0.3.1 with databricks-bundles 1.0.0-1.7.0
-on Databricks CLI v1.7.0. databricks-dbt-factory selects every node by its full
-dot-joined FQN and emits one task per dbt test (including unit tests); this glue
-validates and prunes that output rather than rewriting selectors.
+Requires the databricks-bundles and databricks-dbt-factory pins in pyproject.toml and a
+Databricks CLI that supports PyDABs. databricks-dbt-factory addresses each node with an
+intersected selector it validates against dbt's own grammar, and emits one task per
+dbt test (including unit tests); this glue prunes and bounds that output.
 """
 
 import os
-import re
 import shlex
 from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
-from inspect import signature
 from pathlib import Path
 
 import yaml
@@ -40,12 +38,7 @@ from databricks_dbt_factory.TaskFactory import (
     TestTaskFactory,
 )
 from databricks_dbt_factory.Utils import read_dbt_manifest
-from dbt.graph.selector_methods import is_selected_node
 
-# dbt's own selector matcher, imported from the dbt-core installed in the bundle venv so
-# validation uses runtime dbt's semantics. Its signature gained an is_versioned parameter,
-# so the arity decides which call form _call_is_selected_node uses.
-_SELECTOR_MATCHER_ACCEPTS_VERSIONED = len(signature(is_selected_node).parameters) >= 3
 
 # Resource key of the generated job. The YAML job references it as
 # ${resources.jobs.<DAG_MODULE>_dbt_job.id}.
@@ -85,7 +78,7 @@ PROFILES_DIRECTORY = "dbt_profiles"
 EXTRA_DBT_COMMAND_OPTIONS = ""
 
 # When True, a resource's single-model tests collapse into ONE `<resource>_test`
-# task (dbt test --select <resource-fqn> --indirect-selection cautious) instead of one
+# task (one dbt test with a --select term per test, at --indirect-selection empty) instead of one
 # task per test node; cross-model and zero-dep tests still get their own tasks.
 # Bundling is the main lever for the 1,000-task-per-job Lakeflow limit, but it
 # coarsens retry granularity (a model's tests rerun together, not individually).
@@ -147,9 +140,9 @@ def _write_idempotent(path: Path, content: str) -> None:
 
 
 def _write_serverless_environment_file() -> None:
-    # dbt-core is pinned alongside dbt-databricks: dbt-databricks alone allows a
-    # dbt-core range, and the selector-exactness check imports the LOCAL dbt-core —
-    # runtime must resolve the identical version for the guarantee to hold.
+    # dbt-core is pinned alongside dbt-databricks, which alone allows a dbt-core range:
+    # the runner injects a parse cache built by the local dbt-core, so the serverless
+    # runtime must resolve the identical version.
     spec = {
         "environment_version": "5",
         "dependencies": [_pinned_release("dbt-databricks"), _pinned_release("dbt-core")],
@@ -158,96 +151,8 @@ def _write_serverless_environment_file() -> None:
     _write_idempotent(_BUNDLE_ROOT / SERVERLESS_ENV_FILE, content)
 
 
-def _flat_fqn(fqn: list) -> list[str]:
-    """Normalize an FQN the way dbt's selector does: split each component on dots."""
-    return [part for comp in fqn for part in str(comp).split(".")]
-
-
-def _call_is_selected_node(fqn: list, selector: str, is_versioned: bool) -> bool:
-    """Call the dbt-core selector matcher using the installed API signature."""
-    if _SELECTOR_MATCHER_ACCEPTS_VERSIONED:
-        return is_selected_node(fqn, selector, is_versioned)
-    return is_selected_node(fqn, selector)
-
-
-def _node_selector_matches(selector: str, fqn: list, is_versioned: bool) -> bool:
-    """Exactly dbt's QualifiedNameSelectorMethod.node_is_match: full-FQN match via
-    dbt's own is_selected_node (leaf shortcuts, versioned models, wildcard slurp,
-    prefix semantics), then the package-stripped retry."""
-    if _call_is_selected_node(fqn, selector, is_versioned):
-        return True
-    unscoped = fqn[1:]
-    return bool(unscoped) and _call_is_selected_node(
-        unscoped, selector, is_versioned
-    )
-
-
-def _assert_exact_selectors(manifest: dict, *, bundle_tests: bool = BUNDLE_TESTS) -> None:
-    """Defense-in-depth: databricks-dbt-factory 0.3.1 selects every node by its full
-    dot-joined FQN, which is unambiguous across packages and subdirectories. This check
-    independently confirms each node's FQN still resolves to exactly its own node among
-    same-type nodes, catching the residual cases the factory's FQN generation cannot:
-    two nodes with an identical FQN, and FQN characters that break dbt's selector grammar
-    or the runner's shlex parsing. Matching uses dbt's own is_selected_node (imported
-    above) so it cannot drift from runtime selector semantics; requiring the matched set
-    to equal {self} also rejects a selector that resolves to a single WRONG node (e.g. a
-    test named `[ab]` glob-matching only its sibling `a`).
-
-    Under BUNDLE_TESTS, individual test nodes are not selected on their own — a resource's
-    single-model tests run via its `<resource>_test` task (targeting the resource, which
-    is still checked here). Scanning test nodes then would raise false positives on
-    equal-FQN or shadowed tests that are never selected individually, so test nodes are
-    excluded from the scan in bundled mode."""
-    scanned_types = set(FACTORY_TYPES)
-    if bundle_tests:
-        scanned_types.discard("test")
-    nodes_by_type: dict[str, list[tuple[str, list, bool]]] = {}
-    for key, node in manifest.get("nodes", {}).items():
-        if node.get("resource_type") in scanned_types:
-            nodes_by_type.setdefault(node["resource_type"], []).append(
-                (key, node["fqn"], node.get("version") is not None)
-            )
-    problems = []
-    for rtype, entries in nodes_by_type.items():
-        for key, fqn, _ in entries:
-            selector = ".".join(_flat_fqn(fqn))
-            # The selector is the node's full FQN (package + every directory
-            # component + name). dbt's CLI selector grammar (space, ",", "+",
-            # "@", ":", "*?[]") and the runner's shlex.split reinterpret or
-            # corrupt anything outside dbt identifier characters, so the allowed
-            # set is those plus "." (the FQN separator) and "-" (legal in path
-            # components).
-            if not re.fullmatch(r"[A-Za-z0-9_.-]+", selector):
-                problems.append(
-                    f"{rtype} '{selector}' contains characters unsafe for dbt "
-                    "selector or shell parsing"
-                )
-                continue
-            matched = {
-                other_key
-                for other_key, other_fqn, other_versioned in entries
-                if _node_selector_matches(selector, other_fqn, other_versioned)
-            }
-            if matched != {key}:
-                extras = sorted(matched - {key})
-                detail = (
-                    f"misses its own node and matches {extras}"
-                    if key not in matched
-                    else f"also matches {extras}"
-                )
-                problems.append(f"{rtype} '{selector}' {detail}")
-    if problems:
-        raise RuntimeError(
-            "Generated selectors are not exact: "
-            + "; ".join(sorted(problems))
-            + ". Rename the affected resources, directories, or tests so each "
-            "selector resolves to exactly its own node, or fall back to a single "
-            "dbt_task."
-        )
-
-
 def _assert_unique_task_keys(tasks: list[dict]) -> None:
-    """Defense-in-depth: databricks-dbt-factory 0.3.1 derives readable task keys
+    """Defense-in-depth: databricks-dbt-factory derives readable task keys
     (`<resource>_<type>`, bundled `<resource>_test`) through build_task_key_maps, which
     already disambiguates collisions and bounds keys to 100 chars — so the factory's own
     output is unique. This independently confirms that invariant on the emitted tasks:
@@ -259,7 +164,7 @@ def _assert_unique_task_keys(tasks: list[dict]) -> None:
         raise RuntimeError(
             "Generated task keys collide: "
             + ", ".join(duplicates)
-            + ". This should not happen with databricks-dbt-factory 0.3.1; rename the "
+            + ". This should not happen with databricks-dbt-factory; rename the "
             "affected dbt resources or fall back to a single dbt_task."
         )
 
@@ -351,7 +256,6 @@ def _build_tasks(
 
     factory = DbtFactory(task_factories, bundle_tests=bundle_tests)
     manifest = read_dbt_manifest(str(_BUNDLE_ROOT / _manifest_path(target)))
-    _assert_exact_selectors(manifest, bundle_tests=bundle_tests)
     tasks = factory.create_tasks(manifest)
     _assert_unique_task_keys(tasks)
     tasks = _prune_dangling_deps(tasks)
