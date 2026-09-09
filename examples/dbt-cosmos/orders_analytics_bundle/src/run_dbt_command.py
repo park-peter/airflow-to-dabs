@@ -19,6 +19,7 @@ import shutil
 import tempfile
 from urllib.parse import urlparse
 
+from databricks.sdk import WorkspaceClient
 from dbt.cli.main import dbtRunner
 
 # COMMAND ----------
@@ -54,13 +55,15 @@ if dbt_vars_raw:
 
 # COMMAND ----------
 
-ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-os.environ["DBT_ACCESS_TOKEN"] = ctx.apiToken().get()
-# dbt's host must be a bare hostname, while apiUrl() returns a full URL. Keep only the
+# Authenticate dbt with the notebook's own credentials via the Databricks SDK.
+ws = WorkspaceClient()
+os.environ["DBT_ACCESS_TOKEN"] = ws.config.authenticate()["Authorization"].removeprefix("Bearer ").strip()
+# dbt's host must be a bare hostname, while config.host is a full URL. Keep only the
 # netloc so "https://my-workspace.databricks.com/" yields "my-workspace.databricks.com".
-_api_url = ctx.apiUrl().get()
-_api_parsed = urlparse(_api_url)
-os.environ["DBT_HOST"] = _api_parsed.netloc or _api_parsed.path.strip("/")
+_host_parsed = urlparse(ws.config.host)
+os.environ["DBT_HOST"] = _host_parsed.netloc or _host_parsed.path.strip("/")
+
+ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
 
 # chdir to the dbt project so dbt runs from inside it. Relative `project_directory` is
 # resolved against this notebook's own workspace location — the same anchor native

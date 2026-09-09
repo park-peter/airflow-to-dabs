@@ -12,7 +12,7 @@ Converted from Airflow DAG `orders_analytics` (astronomer-cosmos) using dbt fact
 | `schedule_interval="@daily"` | `schedule.quartz_cron_expression: 0 0 0 * * ?` (UTC) | |
 | `default_args.retries: 2` / `retry_delay: 5m` | Task-level `max_retries: 2`, `min_retry_interval_millis: 300000` | Applied to YAML-job notebook tasks. dbt job tasks rely on Lakeflow repair/rerun. |
 | `default_args.email` | `email_notifications.on_failure` | |
-| cosmos `DatabricksTokenProfileMapping` | `dbt_profiles/profiles.yml` with `DBT_HOST` / `DBT_ACCESS_TOKEN` injected by the runner notebook | No Airflow connection needed; the runner uses the notebook context token. |
+| cosmos `DatabricksTokenProfileMapping` | `dbt_profiles/profiles.yml` with `DBT_HOST` / `DBT_ACCESS_TOKEN` injected by the runner notebook | No Airflow connection needed; the runner authenticates with the notebook's own credentials via the Databricks SDK. |
 | cosmos `RenderConfig(test_behavior=AFTER_EACH)` | Factory default: one test task per test node, downstream models gated on tests | Equivalent behavior. |
 
 ## Two-job layout
