@@ -342,7 +342,7 @@ be replayed for the right window. (During a backfill the override wins regardles
 default; the default only governs **normal** runs — which is why a logical/partition date should
 default to `{{job.trigger.time.iso_date}}`, not `{{job.start_time.iso_date}}`, whose drift on delayed
 or retried runs would process the wrong date.) So: expose `run_date`, default it to the Step-1 choice,
-and record in `MIGRATION_NOTES.md` that a backfill should override `run_date` with `{{backfill.iso_date}}`. (Backfills always run the whole job; **pipeline tasks are not parameterized**
+and record in `MIGRATION_NOTES.md` that a backfill should override `run_date` with `{{backfill.iso_date}}`. If the migration preserves an Airflow 2 previous-interval offset by keeping `run_date` empty and deriving it from a separate trigger/logical-instant parameter, the backfill must instead override that trigger/logical-instant parameter with `{{backfill.iso_date}}`; overriding `run_date` would bypass the offset and replay the wrong partition. (Backfills always run the whole job; **pipeline tasks are not parameterized**
 and run as-is, so a pipeline-only workload can't carry a backfill date — flag it.)
 
 ## Jinja Template Variable Conversion

@@ -35,8 +35,14 @@
 | `submit_events` retries separately from `wait_for_events` | `transform_events` reruns the full PySpark workload | A retry can repeat writes completed before failure |
 
 - Airflow attempted cluster deletion under `all_done`. Jobs compute lifecycle is owned by the run; there is no explicit teardown task, and teardown cannot independently change the final job status.
-- `catchup=True` maps to native backfill. Override `run_date` with `{{backfill.iso_date}}` for replayed windows.
+- `catchup=True` maps to native backfill. Leave `run_date` empty and override `trigger_date` with `{{backfill.iso_date}}` so replayed runs apply the same previous-day offset as scheduled runs.
 
 ## Logical date semantics
 
-This example deliberately targets Airflow 2 by using `schedule_interval`. For the 02:00 run on January 2, Airflow 2 renders `{{ ds }}` as January 1, the start date of the previous data interval. Lakeflow's `trigger_date` is January 2, so the script derives the previous calendar day when `run_date` is empty. An explicit `run_date` always wins, including `{{backfill.iso_date}}` during native backfill. An Airflow 3 raw-cron DAG uses fire-time semantics and must be evaluated separately instead of inheriting this offset.
+This example deliberately targets Airflow 2 by using `schedule_interval`. For the 02:00 run on January 2, Airflow 2 renders `{{ ds }}` as January 1, the start date of the previous data interval. Lakeflow's `trigger_date` is January 2, so the script derives the previous calendar day when `run_date` is empty. An Airflow 3 raw-cron DAG uses fire-time semantics and must be evaluated separately instead of inheriting this offset.
+
+| Run mode | Parameter values | Processed date |
+|---|---|---|
+| Scheduled | `run_date` remains empty; `trigger_date={{job.trigger.time.iso_date}}` | Previous calendar day |
+| Native backfill | `run_date` remains empty; `trigger_date={{backfill.iso_date}}` | Previous calendar day |
+| Explicit partition replay | `run_date=<date>`; `trigger_date` remains a valid ISO date | Exact `run_date` value |

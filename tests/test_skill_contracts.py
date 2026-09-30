@@ -255,6 +255,12 @@ def test_dataproc_example_collapses_lifecycle_to_one_native_task():
     assert "Airflow 2" in logical_date_section
     assert "previous" in logical_date_section.lower()
 
+    backfill_row = next(
+        line for line in logical_date_section.splitlines() if line.startswith("| Native backfill |")
+    )
+    assert "`run_date` remains empty" in backfill_row
+    assert "`trigger_date={{backfill.iso_date}}`" in backfill_row
+
 
 def test_dataproc_spark_python_task_uses_a_plain_python_file():
     script = _text("examples/dataproc/dataproc_events_bundle/src/transform_events.py")
@@ -279,6 +285,14 @@ def test_dataproc_example_preserves_airflow_2_logical_date():
 
     assert namespace["resolve_run_date"]("", "2026-01-02") == "2026-01-01"
     assert namespace["resolve_run_date"]("2025-12-15", "2026-01-02") == "2025-12-15"
+
+
+def test_dataproc_sensor_mapping_treats_batch_output_as_an_object():
+    body = _text("references/operator-mapping.md")
+    section = body.split("### DataprocJobSensor / DataprocBatchSensor", 1)[1].split("\n### ", 1)[0]
+
+    assert "`batch_id`" in section
+    assert re.search(r"batch (dictionary|dict|object)", section, re.IGNORECASE)
 
 
 def test_manifest_recipe_fails_when_dbt_does_not_write_manifest():

@@ -182,7 +182,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
    - `schedule` or `trigger` from Phase 2
    - `email_notifications` from `default_args.email`
    - Job-level `timeout_seconds` from a static positive DAG `dagrun_timeout`
-   - `parameters` from DAG `params` and Jinja variables like `{{ ds }}` (map `{{ ds }}`/`execution_date` to a `run_date` job parameter — classify wall-clock vs logical/partition semantics; for a logical date on a cron/scheduled job default it `{{job.trigger.time.iso_date}}` so native backfill can override it, but on an event-triggered job derive the date from the event instead; ask the user when ambiguous — see `references/schedule-trigger-mapping.md`)
+   - `parameters` from DAG `params` and Jinja variables like `{{ ds }}` (map `{{ ds }}`/`execution_date` to a `run_date` job parameter — classify wall-clock vs logical/partition semantics; for a logical date on a cron/scheduled job default it `{{job.trigger.time.iso_date}}` so native backfill can override the same parameter, but if code preserves an Airflow 2 previous-interval offset through a separate `trigger_date`, backfill must override `trigger_date` and leave `run_date` empty; on an event-triggered job derive the date from the event instead; ask the user when ambiguous — see `references/schedule-trigger-mapping.md`)
    - `job_clusters` with a shared cluster definition
    - `tasks` list with all mapped tasks, preserving the dependency graph via `depends_on`
    - Task-level `max_retries` and `min_retry_interval_millis` from `default_args.retries` and `retry_delay`
@@ -209,7 +209,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
    - XCom patterns that need conversion to `dbutils.jobs.taskValues`
    - Airflow Connections that need Databricks secrets or UC connections
    - Airflow Variables that need bundle variables or job parameters
-   - `catchup=True` → the backfill expectation and that a native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) should override `run_date` with `{{backfill.iso_date}}`; active `depends_on_past`, retry email, `sla`/`sla_miss_callback`, `max_consecutive_failed_dag_runs`, and non-empty `default_args.env` settings that need explicit replacement
+   - `catchup=True` → the backfill expectation and which date/time parameter a native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) must override with `{{backfill.iso_date}}`; normally this is `run_date`, but a preserved Airflow 2 previous-interval offset must override the corresponding `trigger_date`/logical-instant parameter so replayed and scheduled runs use the same derivation; active `depends_on_past`, retry email, `sla`/`sla_miss_callback`, `max_consecutive_failed_dag_runs`, and non-empty `default_args.env` settings that need explicit replacement
    - Sensor-to-trigger conversions with notes on external location setup
    - Every **collapsed retry envelope**: when multiple Airflow tasks or mapped stages become one Lakeflow task/job hop, identify the original retry boundaries, the new retry boundary, and the possible repeated side effects or expanded rerun scope
    - Setup/teardown lifecycle changes: Airflow teardown runs only after its setup succeeds, while an ordinary Lakeflow teardown task follows explicit dependencies and `run_if`; teardown failure affects the Lakeflow job result unless explicitly redesigned, whereas Airflow teardown failure is excluded from DAG-run status by default unless configured otherwise

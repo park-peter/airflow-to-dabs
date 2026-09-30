@@ -1705,7 +1705,7 @@ Airflow sensors that wait for external conditions map to DABs job-level triggers
 
 **DABs equivalent:** absorbed into the migrated native task, or retained with the external Dataproc orchestration
 
-When a sensor waits on the exact job or batch ID returned by one asynchronous `DataprocSubmitJobOperator` / `DataprocCreateBatchOperator`, no other task consumes the ID, and the workload migrates to a native Lakeflow task, remove the sensor and submission together and rewire their combined graph to the native task. Do not leave a standalone poller for a Dataproc job that no longer exists.
+For `DataprocJobSensor`, collapse only when `dataproc_job_id` resolves to the ID returned by the paired asynchronous `DataprocSubmitJobOperator`. For `DataprocBatchSensor`, match its `batch_id` to the paired `DataprocCreateBatchOperator.batch_id` argument or to a verified ID extracted from the returned batch dictionary; the create-batch operator does not return a raw ID. When no other task consumes the job ID, batch ID, or batch object and the workload migrates to a native Lakeflow task, remove the sensor and submission together and rewire their combined graph to the native task. Do not leave a standalone poller for a Dataproc workload that no longer exists.
 
 If the ID is used for branching, metadata, cancellation, diagnostics, or another DAG; the sensor monitors a job submitted outside the converted graph; or the workload intentionally remains on Dataproc, retain both the external submission contract and polling semantics in an SDK notebook. Preserve the original target states, failure states, polling interval, timeout, soft-fail behavior, and downstream output contract. See `dataproc-migration.md`.
 
