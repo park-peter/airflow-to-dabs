@@ -1,0 +1,9 @@
+{
+  "name": "airflow-to-dabs",
+  "description": "Convert Apache Airflow DAGs into Databricks Declarative Automation Bundles (formerly Databricks Asset Bundles; DABs): databricks.yml, job resources, extracted sources, and migration notes.",
+  "author": { "name": "Peter Park", "url": "https://github.com/park-peter" },
+  "homepage": "https://github.com/park-peter/airflow-to-dabs",
+  "repository": "https://github.com/park-peter/airflow-to-dabs",
+  "license": "MIT",
+  "keywords": ["airflow", "databricks", "dabs", "declarative-automation-bundles", "lakeflow", "migration", "dbt"]
+}

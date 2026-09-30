@@ -9,7 +9,7 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 | Platform | Instruction File | Global (personal) | Project-scoped |
 |----------|------------------|--------------------|----------------|
 | **Cursor** | `SKILL.md` | `~/.cursor/skills/airflow-to-dabs/` | `.cursor/skills/airflow-to-dabs/` |
-| **Claude Code** | `SKILL.md` | `~/.claude/skills/airflow-to-dabs/` | `.claude/skills/airflow-to-dabs/` |
+| **Claude Code** | `SKILL.md` (or the Claude Code plugin) | `~/.claude/skills/airflow-to-dabs/` | `.claude/skills/airflow-to-dabs/` |
 | **Codex CLI** | `AGENTS.md` | `~/.codex/AGENTS.md` | `./AGENTS.md` |
 | **VS Code + Copilot** | `copilot-instructions.md` | — | `.github/copilot-instructions.md` |
 
@@ -47,7 +47,51 @@ Full mapping details: [`references/operator-mapping.md`](references/operator-map
 
 ## Installation
 
-### Quick install (recommended)
+### Claude Code plugin (recommended for Claude Code)
+
+This repository is its own Claude Code plugin marketplace. In a Claude Code session:
+
+```
+/plugin marketplace add park-peter/airflow-to-dabs
+/plugin install airflow-to-dabs@airflow-to-dabs
+```
+
+Or from a shell:
+
+```bash
+claude plugin marketplace add park-peter/airflow-to-dabs
+claude plugin install airflow-to-dabs@airflow-to-dabs
+```
+
+`--scope project` records the plugin in the project's `.claude/settings.json` so everyone who clones the project gets it. To preconfigure a project by hand, commit:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "airflow-to-dabs": {
+      "source": { "source": "github", "repo": "park-peter/airflow-to-dabs" }
+    }
+  },
+  "enabledPlugins": {
+    "airflow-to-dabs@airflow-to-dabs": true
+  }
+}
+```
+
+The plugin version is the git commit it was installed from. Update with `claude plugin marketplace update airflow-to-dabs` followed by `claude plugin update airflow-to-dabs@airflow-to-dabs`; remove with `claude plugin uninstall airflow-to-dabs@airflow-to-dabs`.
+
+### npx skills (any supported agent)
+
+[`skills`](https://github.com/vercel-labs/skills) installs the skill into one or more coding agents from the GitHub repo:
+
+```bash
+npx skills add park-peter/airflow-to-dabs                          # interactive: pick agents and scope
+npx skills add park-peter/airflow-to-dabs --global --agent claude-code --yes
+```
+
+`npx skills update` and `npx skills remove airflow-to-dabs` update and remove it.
+
+### install.sh (all platforms)
 
 Clone the repo, inspect the script if you like, then run it:
 
@@ -323,6 +367,7 @@ make test             # contract + dbt glue suites
 make test-contracts   # cross-surface rule coverage and structural checks
 make test-glue        # regression tests for the generated PyDABs dbt glue
 make validate         # schema-validate the checked-in example bundles
+make validate-plugin  # validate the Claude Code plugin and marketplace manifests
 ```
 
 `tests/test_skill_contracts.py` matches each hardening rule through the `<!-- contract: id -->` anchors carried by `SKILL.md`, `AGENTS.md`, and `copilot-instructions.md`, so a rule dropped from one surface fails the build while rewording does not. Add an anchor to all three surfaces when adding a rule.

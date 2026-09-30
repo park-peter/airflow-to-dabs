@@ -15,6 +15,7 @@ Run with: make test
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -66,6 +67,22 @@ def test_skill_frontmatter_carries_only_the_discovery_keys():
 
     assert set(frontmatter) == {"name", "description"}
     assert "Declarative Automation Bundles" in frontmatter["description"]
+
+
+def test_plugin_manifests_install_the_root_skill():
+    # The repo is its own single-plugin marketplace; the root SKILL.md loads as the plugin's
+    # only skill. With no manifest version, installs are keyed to the git commit.
+    skill_name = yaml.safe_load(_text("SKILL.md").split("---\n", 2)[1])["name"]
+    plugin = json.loads(_text(".claude-plugin/plugin.json"))
+    marketplace = json.loads(_text(".claude-plugin/marketplace.json"))
+    [entry] = marketplace["plugins"]
+
+    assert plugin["name"] == skill_name
+    assert entry["name"] == skill_name
+    assert entry["source"] == "./"
+    assert "version" not in plugin
+    assert "version" not in entry
+    assert not (ROOT / "skills").exists(), "a skills/ directory would replace the root SKILL.md"
 
 
 def test_every_surface_carries_every_hardening_contract():
