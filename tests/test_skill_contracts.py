@@ -13,8 +13,10 @@ Run with: make test
 
 from __future__ import annotations
 
+import ast
 import json
 import re
+from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
@@ -32,10 +34,12 @@ REQUIRED_CONTRACTS = frozenset(
         "mixed-schedule-manual",
         "soft-fail-condition-gate",
         "retained-sensor-poke",
+        "spark-python-plain-script",
         "lifecycle-retry-disclosure",
         "manifest-recipe-guard",
         "required-var-not-a-fix",
         "dataset-or-time-schedule",
+        "dataproc-payload-routing",
         "dbt-intersected-selector",
     }
 )
@@ -173,8 +177,108 @@ def test_operator_sections_declare_a_databricks_mapping():
 
 def test_new_operator_sections_reach_the_readme_coverage_table():
     readme = _text("README.md")
-    for operator in ("BranchDateTimeOperator", "BranchDayOfWeekOperator", "BashSensor", "PythonSensor"):
+    for operator in (
+        "BranchDateTimeOperator",
+        "BranchDayOfWeekOperator",
+        "BashSensor",
+        "PythonSensor",
+        "DataprocSubmitJobOperator",
+        "DataprocCreateBatchOperator",
+        "DataprocJobSensor",
+        "DataprocBatchSensor",
+    ):
         assert f"`{operator}`" in readme, f"{operator} is absent from the README coverage table"
+
+
+def test_dataproc_reference_routes_payloads_and_compute_constraints():
+    body = _text("references/dataproc-migration.md")
+
+    for operator in (
+        "DataprocSubmitJobOperator",
+        "ManagedSparkSubmitJobOperator",
+        "DataprocCreateBatchOperator",
+        "DataprocCreateClusterOperator",
+        "DataprocJobSensor",
+        "DataprocBatchSensor",
+    ):
+        assert operator in body
+
+    expected_routes = {
+        "pyspark_job": "spark_python_task",
+        "pyspark_batch": "spark_python_task",
+        "pyspark_notebook_batch": "notebook_task",
+        "spark_job": "spark_jar_task",
+        "spark_batch": "spark_jar_task",
+        "spark_sql_job": "sql_task",
+        "spark_r_job": "notebook_task",
+    }
+    for discriminator, task_type in expected_routes.items():
+        row = next(
+            line
+            for line in body.splitlines()
+            if line.startswith("|") and f"`{discriminator}`" in line
+        )
+        assert f"`{task_type}`" in row
+
+    spark_r_row = next(
+        line for line in body.splitlines() if line.startswith("|") and "`spark_r_job`" in line
+    )
+    assert "classic" in spark_r_row.lower()
+
+    recognition = body.split("## Recognition", 1)[1].split("## Inventory contract", 1)[0].lower()
+    assert "preferred" not in recognition
+    assert "compatibility" not in recognition
+
+
+def test_dataproc_example_collapses_lifecycle_to_one_native_task():
+    bundle = yaml.safe_load(_text("examples/dataproc/dataproc_events_bundle/databricks.yml"))
+    resource = yaml.safe_load(
+        _text("examples/dataproc/dataproc_events_bundle/resources/dataproc_events_job.yml")
+    )
+    notes = _text("examples/dataproc/dataproc_events_bundle/MIGRATION_NOTES.md")
+    job = resource["resources"]["jobs"]["dataproc_events_job"]
+
+    assert all("default" not in bundle["variables"][key] for key in ("spark_version", "node_type_id"))
+    assert [task["task_key"] for task in job["tasks"]] == ["transform_events"]
+    assert "spark_python_task" in job["tasks"][0]
+    assert "spark_submit_task" not in json.dumps(resource)
+    assert all(prefix not in json.dumps(resource) for prefix in ("yarn:", "hdfs:", "mapred:"))
+
+    parameters = {parameter["name"]: parameter["default"] for parameter in job["parameters"]}
+    assert parameters["run_date"] == ""
+    assert parameters["trigger_date"] == "{{job.trigger.time.iso_date}}"
+
+    retry_section = notes.split("## Retry and lifecycle differences", 1)[1]
+    assert "| Airflow retry boundary | Lakeflow retry boundary | Repeated-side-effect risk |" in retry_section
+
+    logical_date_section = notes.split("## Logical date semantics", 1)[1]
+    assert "Airflow 2" in logical_date_section
+    assert "previous" in logical_date_section.lower()
+
+
+def test_dataproc_spark_python_task_uses_a_plain_python_file():
+    script = _text("examples/dataproc/dataproc_events_bundle/src/transform_events.py")
+    first_line = script.splitlines()[0]
+
+    assert "Databricks notebook source" not in first_line
+    assert "argparse.ArgumentParser()" in script
+    assert "timedelta(days=1)" in script
+
+
+def test_dataproc_example_preserves_airflow_2_logical_date():
+    module = ast.parse(
+        _text("examples/dataproc/dataproc_events_bundle/src/transform_events.py")
+    )
+    resolver = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_run_date"
+    )
+    namespace = {"date": date, "timedelta": timedelta}
+    exec(compile(ast.Module(body=[resolver], type_ignores=[]), "<resolver>", "exec"), namespace)
+
+    assert namespace["resolve_run_date"]("", "2026-01-02") == "2026-01-01"
+    assert namespace["resolve_run_date"]("2025-12-15", "2026-01-02") == "2025-12-15"
 
 
 def test_manifest_recipe_fails_when_dbt_does_not_write_manifest():

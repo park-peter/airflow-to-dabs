@@ -1,6 +1,6 @@
 ---
 name: airflow-to-dabs
-description: Converts Apache Airflow DAG files into Databricks Declarative Automation Bundles projects, formerly called Databricks Asset Bundles and commonly abbreviated DABs. Use when migrating Airflow DAGs to Databricks Lakeflow Jobs, converting Airflow operators to bundle task types, converting dbt-on-Airflow workloads (astronomer-cosmos DbtDag/DbtTaskGroup, dbt operators) to per-model Lakeflow jobs, or generating databricks.yml and job resource YAML from Airflow Python files. Triggers on mentions of Airflow migration, DAG conversion, Airflow to Databricks, Airflow to Lakeflow, cosmos or dbt DAG migration, Asset Bundles, Declarative Automation Bundles, or DABs generation from Airflow.
+description: Converts Apache Airflow DAG files into Databricks Declarative Automation Bundles projects, formerly called Databricks Asset Bundles and commonly abbreviated DABs. Use when migrating Airflow DAGs to Databricks Lakeflow Jobs, converting Airflow or Dataproc operators to bundle task types, converting dbt-on-Airflow workloads (astronomer-cosmos DbtDag/DbtTaskGroup, dbt operators) to per-model Lakeflow jobs, or generating databricks.yml and job resource YAML from Airflow Python files. Triggers on mentions of Airflow migration, Dataproc migration, DAG conversion, Airflow to Databricks, Airflow to Lakeflow, cosmos or dbt DAG migration, Asset Bundles, Declarative Automation Bundles, or DABs generation from Airflow.
 ---
 
 # Airflow to Databricks Declarative Automation Bundles Converter
@@ -20,6 +20,7 @@ Convert Apache Airflow DAG files into complete Databricks Declarative Automation
 - Generate `MIGRATION_NOTES.md` documenting conversion decisions and manual action items
 - Handle TaskGroups, SubDAGs, branching operators, Airflow dynamic task mapping, and XCom patterns
 - **Hadoop/HDFS migration**: detect `spark-submit` in BashOperator/SSHOperator, clean up YARN Spark configs, map HDFS paths, convert HiveQL to Spark SQL, handle SqoopOperator alternatives
+- **Dataproc migration**: recognize both `Dataproc*` names and `ManagedSpark*` aliases, route job and batch payloads to native Lakeflow task types, absorb Dataproc cluster lifecycle into Jobs compute, and fail closed for non-Spark engines
 - Bulk conversion guidance for DAGs with hundreds of Spark tasks
 
 ## Workflow
@@ -45,6 +46,7 @@ Read the provided Airflow DAG file(s) and extract the following structure:
    - `BashOperator`/`SSHOperator` commands matching `dbt (deps|seed|snapshot|run|test|build|docs)`
    - Capture: `project_dir`/`dbt_project_path`, `profiles_dir`/profile mapping, `target`, `select`/`exclude`/`models`, `vars`, `full_refresh`, and whether the dbt project source or a `manifest.json` is available to the conversion
    - Summary-table convention: a cosmos `DbtDag`/`DbtTaskGroup` appears as one row with DABs Task Type `dbt factory job (or dbt_task)`, Tier 2, note "decision point -- see Phase 2". dbt CLI operator tasks keep their own rows (Tier 1) with the same DABs Task Type and note; multiple dbt tasks over the same project (e.g. seed >> run >> test) collapse into a single factory job in Phase 3
+8. **Dataproc workloads**: Detect imports from `airflow.providers.google.cloud.operators.dataproc` and `airflow.providers.google.cloud.operators.managed_spark`, plus `DataprocJobSensor` and `DataprocBatchSensor`. Capture the complete `job`, `batch`, `cluster_config`, `virtual_cluster_config`, workflow-template body/parameters, asynchronous/deferrable settings, GCS artifacts, Spark properties, files/archives/JARs, labels, service account, and whether returned job/batch/cluster values are consumed. Determine the nested one-of payload (`pyspark_job`, `spark_job`, `spark_sql_job`, `spark_r_job`, `pyspark_batch`, `pyspark_notebook_batch`, `spark_batch`, `spark_sql_batch`, or `spark_r_batch`) before choosing a Databricks task type. Read `references/dataproc-migration.md`.
 
 Present a summary table to the user before proceeding:
 
@@ -75,7 +77,8 @@ For each task in the inventory:
    - `SubDagOperator`/`TaskGroup`: Flatten into the parent job with prefixed task keys, or extract to a separate job via `run_job_task`. (`SubDagOperator` is removed in Airflow 3.)
    - **Dynamic task mapping** (`.expand()`/`.expand_kwargs()`): map to `for_each_task` with `{{input}}` in the nested task; `.partial()` kwargs become constant `base_parameters`. Only when the collection is a literal or an upstream task-value/job-param ref (choose the transport by size — literal ≤5,000 chars, task value ≤48 KiB, job param ≤10,000 chars, all JSON). Flag multi-arg Cartesian products, chained/reduced mapping, and non-deterministic collections. See the Dynamic-task-mapping support matrix in `references/operator-mapping.md`.
    - **Mapped task group** (`@task_group.expand()`): map to `for_each_task` → `run_job_task` → a **child job** holding the group's subgraph (a `for_each_task` nests one task, not a subgraph). Set the parent `concurrency`, raise the child job's `max_concurrent_runs`, and set `queue: {enabled: true}` on the child (bundle jobs don't inherit UI queueing); keep total Run Job nesting ≤ 3. Per-iteration outputs can't be consumed downstream. See the Mapped-task-group section in `references/operator-mapping.md`.
-   - **Cloud & messaging operator families** (AWS Athena/EMR/Glue/Lambda/Redshift/SageMaker/SQS/SNS; GCP BigQuery/Dataproc/Dataflow/PubSub; Azure ADF/Synapse; HTTP/SFTP/Kafka/Trino/etc.): no 1:1 task — route by intent per the classification step. Remote query → federation (federatable sources only; Athena/Trino/Presto are not); recurring source→Delta → Lakeflow Connect; remote compute → migrate to notebook/SQL/pipeline; retained remote orchestration → SDK notebook; Kafka→Delta → managed Kafka connector or Structured Streaming; messaging side-effects → SDK notebook. State exact import paths only if verified. See the Cloud & messaging section in `references/operator-mapping.md`.
+   - **Dataproc / Managed Spark operators**: route by the nested job or batch payload, never by the operator class alone. PySpark script → `spark_python_task`; PySpark notebook batch → `notebook_task`; JVM Spark → `spark_jar_task`; compatible Spark SQL → `sql_task`; SparkR → R `notebook_task` on classic compute. Never emit the deprecated `spark_submit_task`. Collapse create/start/stop/delete cluster tasks into Jobs compute only when their IDs/outputs are not consumed outside the migrated workload; flatten workflow templates into the Lakeflow task graph; pair asynchronous submissions with their Dataproc sensor before collapsing them. Hadoop MapReduce, Pig, Flink, Presto/Trino, unresolved template bodies, unsupported auxiliary artifacts, or retained external Dataproc control-plane behavior require the explicit fallbacks in `references/dataproc-migration.md`.
+   - **Cloud & messaging operator families** (AWS Athena/EMR/Glue/Lambda/Redshift/SageMaker/SQS/SNS; GCP BigQuery/Dataflow/PubSub; Azure ADF/Synapse; HTTP/SFTP/Kafka/Trino/etc.): no 1:1 task — route by intent per the classification step. Remote query → federation (federatable sources only; Athena/Trino/Presto are not); recurring source→Delta → Lakeflow Connect; remote compute → migrate to notebook/SQL/pipeline; retained remote orchestration → SDK notebook; Kafka→Delta → managed Kafka connector or Structured Streaming; messaging side-effects → SDK notebook. State exact import paths only if verified. See the Cloud & messaging section in `references/operator-mapping.md`.
 3. **Tier 3 (sensors)**: Convert to job-level triggers. Read `references/schedule-trigger-mapping.md` in this skill's directory.
    - File sensors -> `trigger.file_arrival`; set `queue.enabled: true`, keep trigger and ingestion discovery recursive over the same root, preserve the original filter, and document the initial run needed for files that predate trigger creation
    - Table/SQL sensors -> `trigger.table_update`
@@ -186,11 +189,11 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
    - Task-level `timeout_seconds` from `default_args.execution_timeout`
    - Cross-DAG references via `TriggerDagRunOperator` resolve to `${resources.jobs.<target-dag-job-key>.id}` within the same bundle
 
-3. **`src/<dag_id>/*.py` notebooks**: For each `notebook_task` or `spark_python_task`:
+3. **`src/<dag_id>/*.py` Python sources**: For each `notebook_task` or `spark_python_task`:
    - In multi-DAG mode, namespace source files under `src/<dag_id>/` to avoid collisions
    - In single-DAG mode, place directly in `src/`
-   - Start with `# Databricks notebook source`
-   - Add `dbutils.widgets.text()` and `dbutils.widgets.get()` for each `base_parameters` entry
+   - For `notebook_task`, start with `# Databricks notebook source` and use `dbutils.widgets.text()` / `dbutils.widgets.get()` for each `base_parameters` entry
+   - For `spark_python_task`, generate a plain Python script whose first line does not contain `Databricks notebook source`; receive the task's `parameters` through `argparse` or `sys.argv`
    - Extract the `python_callable` function body (not the function signature itself)
    - Replace Airflow imports with Databricks equivalents (e.g., `from airflow.models import Variable` -> `dbutils.widgets.get()`)
 
@@ -211,6 +214,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
    - Every **collapsed retry envelope**: when multiple Airflow tasks or mapped stages become one Lakeflow task/job hop, identify the original retry boundaries, the new retry boundary, and the possible repeated side effects or expanded rerun scope
    - Setup/teardown lifecycle changes: Airflow teardown runs only after its setup succeeds, while an ordinary Lakeflow teardown task follows explicit dependencies and `run_if`; teardown failure affects the Lakeflow job result unless explicitly redesigned, whereas Airflow teardown failure is excluded from DAG-run status by default unless configured otherwise
    - **Cross-DAG dependency map**: which jobs reference other jobs via `run_job_task`, with resolved `${resources.jobs...}` substitutions
+   - **Dataproc migration (when present)**: each payload discriminator and selected task type; every collapsed cluster or batch lifecycle task; cluster properties dropped or translated; unresolved runtime/node/autoscaling choices; GCS artifact and data access prerequisites; service-account replacement; workflow-template expansion; asynchronous submission/sensor collapse; output IDs or batch objects that were consumed; the Airflow version/date-window interpretation for every `{{ ds }}` use; unsupported Dataproc engines or auxiliary artifacts; and any semantic change in cancellation, retry, or rerun boundaries
    - **Factory mode (when active)**: selector semantics (whole-manifest explosion vs any Airflow-side `--select`/`--exclude`), serverless-only note with the classic-cluster manual variation (`job_cluster_key` in `DbtTaskOptions`), the measured task count and the 1,000-task per-job limit (whether `BUNDLE_TESTS` was enabled and its retry-granularity tradeoff; if over the limit even bundled, the split-by-tag / sub-job / single-`dbt_task` options), retry mapping (apply Airflow retries to the YAML job's own tasks only; never on the `run_job_task` hop, which would re-run the whole dbt job — per-model reruns use Lakeflow repair), vars semantics (static vars from the committed `dbt_vars.json` at parse AND run time; runtime `dbt_vars` overrides are graph-invariant only and trigger a per-task re-parse since the parse cache is bypassed), `full_refresh` manual-review note, the classic-compute variation requiring dbt installed on the cluster with both dbt-databricks AND dbt-core pinned exactly, and the fail-closed guards (a unique-task-key check and the 1,000-task per-job limit), the runner also rejecting a dbt command that carries its own `--vars` (vars must use the canonical `dbt_vars.json`/`dbt_vars` channel), `dbt_profiles/profiles.yml` values to fill (`<WAREHOUSE_ID>`, catalog/schema), and the `make setup && make manifest` prerequisite before the first deploy
 
 6. **Factory-mode artifacts** (per dbt-bearing DAG, when the Phase 2 decision point selects factory mode):
@@ -243,7 +247,8 @@ After generating all files:
 6. **Retained sensor semantics check**: Compare every retained file sensor's generated discovery with the original hook/callable. If the source prefix listing is recursive, a notebook that uses only a single shallow `dbutils.fs.ls(root)` is a validation error; require explicit directory traversal or equivalent paginated object-store discovery before accepting the bundle.
 7. **Bundle schema check**: Run `databricks bundle validate -t <target>` and fix schema warnings/errors (if auth is unavailable, run `databricks bundle schema` validation checks offline and report the limitation). An unassigned required bundle variable is an expected validate failure: report it as a value the user must supply, never resolve it by adding a default. In factory mode, complete step 8's setup/manifest sequence BEFORE this command -- validate executes the PyDABs hook, which needs the venv and manifest
 8. **Factory-mode validation** (when active): Run `make setup` (creates `.venv` via `uv`), then `make manifest` (`dbt deps` + `dbt parse` — no warehouse connection needed, and the recipe must fail unless `target/<target>/manifest.json` exists), then `databricks bundle validate -t dev`. Validation executes the PyDABs hook, so it requires the venv and `target/dev/manifest.json` (per-target: `make manifest TARGET=prod` before any prod deploy — never reuse a dev-parsed manifest). A RuntimeError from the hook's fail-closed checks (a task-key collision, or a job over the 1,000-task limit) means fall back to single `dbt_task` for that workload; databricks-dbt-factory addresses each node with an intersected `fqn:`/`package:`/`file:`/`resource_type:` selector it validates against dbt's grammar, derives readable keys (`<resource>_<type>`, bundled `<resource>_test`) guaranteed unique and ≤100 chars, and emits unit-test tasks natively, and bundled test tasks repeat `--select` per test at `--indirect-selection empty` when `BUNDLE_TESTS = True`. Also run `make task-count` and act on the 1,000-task per-job limit per the Phase 2 task-count check; the hook additionally raises above 1,000 tasks so an over-limit job fails at validate rather than at the Jobs API. For any OTHER failure here, preserve the resolved pins, fix only clearly version-independent causes (auth, profiles, project parsing, bundle schema) directly, and otherwise stop and surface the evidence. Do NOT auto-fall-back to `dbt_task` for an unexpected failure — a dbt core/adapter incompatibility that failed `dbt parse` would recur under `dbt_task` anyway; repinning or a `dbt_task` fallback is an explicit user decision. Note the dbt pins were already resolved before this step (see Phase 3), so **skipping is allowed only when `uv`/`dbt` is unavailable at this validation step after pins resolved** — report the exact commands the user must run, same style as the offline-auth caveat in step 7; `uv` being unavailable during pin *resolution* must stop generation, not skip. Also check statically: every `python.resources` entry names an existing `resources/<module>.py` with a `load_resources` function, and each `run_job_task` reference `${resources.jobs.<key>.id}` matches the `JOB_KEY` passed to `resources.add_job`
-9. **Present summary**: Show the user a final summary with file list, task count, and any MIGRATION_NOTES items requiring attention
+9. **Dataproc validation** (when present): Verify every submit/create-batch payload has exactly one recognized discriminator and one native task target; no generated resource contains `spark_submit_task`; every `spark_python_task.python_file` is a plain Python script without a `Databricks notebook source` first-line marker; every R task uses classic compute; every Spark property copied to serverless is on the documented serverless allowlist or the task uses classic compute; every removed cluster/batch/control task has its dependencies rewired; every asynchronous submission/sensor pair is either collapsed together or retained together; all `gs://` artifacts and data paths have an explicit access decision; every date-sensitive `{{ ds }}` mapping records its Airflow-version/data-window decision; and every Dataproc/YARN/HDFS-only property is removed, translated, or listed in `MIGRATION_NOTES.md`. See `references/dataproc-migration.md`.
+10. **Present summary**: Show the user a final summary with file list, task count, and any MIGRATION_NOTES items requiring attention
 
 ## Resources
 
@@ -252,9 +257,10 @@ Progressive disclosure -- read these references as needed during each phase:
 - `references/operator-mapping.md`: Complete Tier 1-4 mapping table with Airflow/DABs YAML examples for every operator type
 - `references/dab-schema-reference.md`: Condensed DABs YAML schema covering all task types, triggers, clusters, variables, and dynamic value references
 - `references/schedule-trigger-mapping.md`: Airflow cron-to-Quartz conversion table, preset mappings, sensor-to-trigger mappings, Airflow 3 Asset/`AssetOrTimeSchedule` scheduling with the Asset→UC-table resolution rule, default_args mappings, and Jinja variable conversions
-- `references/conversion-examples.md`: 6 complete before/after examples (simple ETL, branching, sensor-triggered, multi-system, cosmos dbt factory mode, dynamic mapping + mapped task group)
+- `references/conversion-examples.md`: 7 complete before/after examples (simple ETL, branching, sensor-triggered, multi-system, cosmos dbt factory mode, dynamic mapping + mapped task group, Dataproc)
 - `references/airflow3-migration.md`: Airflow 3 recognition — `airflow.sdk` and `apache-airflow-providers-standard` import paths, Assets vs Datasets, asset scheduling, removed operators (`SubDagOperator`), and the recognize→safe-map→flag checklist
 - `references/lakeflow-connect.md`: When to route recurring ingestion to Lakeflow Connect (vs a Jobs task), the three ingestion styles (CDC / query-based / foreign-catalog incl. Snowflake→Delta), eligibility, the DABs generation contract (`ingestion_definition`/`gateway_definition`/foreign catalog + `engine: direct`), continuous-vs-triggered orchestration, and the MIGRATION_NOTES checklist
+- `references/dataproc-migration.md`: Dataproc/Managed Spark inventory, payload-directed Spark mappings, cluster lifecycle collapse, workflow-template expansion, GCS/auth migration, retained-external fallback, validation, and MIGRATION_NOTES checklist
 - `references/hadoop-migration-guide.md`: HDFS path conversion, YARN Spark config cleanup, Hive-to-Unity-Catalog mapping, spark-submit detection in BashOperator/SSHOperator, Sqoop alternatives, and bulk conversion guidance for large DAGs
 - `assets/templates/databricks.yml.tmpl`: Skeleton bundle configuration template
 - `assets/templates/job-resource.yml.tmpl`: Skeleton job resource template
@@ -300,11 +306,18 @@ User says: "Convert orders_analytics_dag.py to a Databricks Asset Bundle -- the 
 
 Result: A two-job bundle — the YAML job with the non-dbt tasks and a `run_job_task` hop, plus a Python-generated dbt job (one task per dbt model/seed/snapshot/test) built at deploy time from the dbt manifest via PyDABs. See `examples/dbt-cosmos/` for a complete conversion.
 
+### Example: Convert an Airflow DAG that submits Dataproc jobs
+
+User says: "Convert this Airflow DAG that creates a Dataproc cluster, submits a PySpark job, waits for it, and deletes the cluster"
+
+Result: A Lakeflow Job with a native `spark_python_task`; the Dataproc cluster lifecycle and wait sensor are removed and their edges rewired, compatible Spark properties move to Jobs compute, and GCS/auth/runtime differences are recorded in `MIGRATION_NOTES.md`. See `examples/dataproc/` and `references/dataproc-migration.md`.
+
 <!-- Hardening contracts carried by this surface; tests/test_skill_contracts.py enforces the set. -->
 <!-- contract: branch-datetime-dayofweek -->
 <!-- contract: bundles-product-name -->
 <!-- contract: constant-sensors -->
 <!-- contract: dataset-or-time-schedule -->
+<!-- contract: dataproc-payload-routing -->
 <!-- contract: dbt-intersected-selector -->
 <!-- contract: file-arrival-queue -->
 <!-- contract: lifecycle-retry-disclosure -->
@@ -314,4 +327,5 @@ Result: A two-job bundle — the YAML job with the non-dbt tasks and a `run_job_
 <!-- contract: recursive-listing -->
 <!-- contract: required-var-not-a-fix -->
 <!-- contract: retained-sensor-poke -->
+<!-- contract: spark-python-plain-script -->
 <!-- contract: soft-fail-condition-gate -->

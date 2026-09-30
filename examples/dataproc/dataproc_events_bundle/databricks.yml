@@ -1,0 +1,22 @@
+bundle:
+  name: dataproc-events
+
+include:
+  - resources/*.yml
+
+variables:
+  spark_version:
+    description: Databricks Runtime selected for the migrated Dataproc workload
+  node_type_id:
+    description: Workspace-supported GCP node type selected for the migrated workload
+  input_path:
+    description: GCS or Unity Catalog volume path containing raw events
+  output_table:
+    description: Fully qualified Unity Catalog destination table
+
+targets:
+  dev:
+    default: true
+    mode: development
+  prod:
+    mode: production

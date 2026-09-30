@@ -888,3 +888,98 @@ mapped group → `for_each_task` whose body is a `run_job_task`; and a **child**
   aggregation task.
 - See the **Dynamic task mapping** and **Mapped task group** sections in
   `references/operator-mapping.md` for the full support matrix and per-transport `inputs` limits.
+
+---
+
+## Example 7: Dataproc PySpark Job
+
+This example interprets `{{ ds }}` with Airflow 2 scheduled data-interval semantics.
+
+### Airflow DAG (abridged)
+
+```python
+from airflow.providers.google.cloud.operators.dataproc import (
+    DataprocCreateClusterOperator,
+    DataprocDeleteClusterOperator,
+    DataprocSubmitJobOperator,
+)
+from airflow.providers.google.cloud.sensors.dataproc import DataprocJobSensor
+
+create_cluster = DataprocCreateClusterOperator(
+    task_id="create_cluster",
+    cluster_name=CLUSTER_NAME,
+    region="us-central1",
+    cluster_config={
+        "worker_config": {"num_instances": 4, "machine_type_uri": "n2-standard-8"},
+        "software_config": {
+            "image_version": "2.2-debian12",
+            "properties": {
+                "spark:spark.sql.adaptive.enabled": "true",
+                "yarn:yarn.nodemanager.resource.memory-mb": "28672",
+            },
+        },
+    },
+)
+
+submit_events = DataprocSubmitJobOperator(
+    task_id="submit_events",
+    region="us-central1",
+    asynchronous=True,
+    job={
+        "placement": {"cluster_name": CLUSTER_NAME},
+        "pyspark_job": {
+            "main_python_file_uri": "gs://customer-dataproc-artifacts/jobs/transform_events.py",
+            "args": ["--run-date", "{{ ds }}"],
+        },
+    },
+)
+
+wait_for_events = DataprocJobSensor(
+    task_id="wait_for_events",
+    region="us-central1",
+    dataproc_job_id="{{ ti.xcom_pull(task_ids='submit_events') }}",
+)
+
+delete_cluster = DataprocDeleteClusterOperator(
+    task_id="delete_cluster",
+    cluster_name=CLUSTER_NAME,
+    region="us-central1",
+    trigger_rule="all_done",
+)
+
+create_cluster >> submit_events >> wait_for_events >> delete_cluster
+```
+
+### DABs Output
+
+```yaml
+resources:
+  jobs:
+    dataproc_events_job:
+      name: dataproc-events
+      parameters:
+        - name: run_date
+          default: ""
+        - name: trigger_date
+          default: "{{job.trigger.time.iso_date}}"
+      job_clusters:
+        - job_cluster_key: events_compute
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 4
+            spark_conf:
+              spark.sql.adaptive.enabled: "true"
+      tasks:
+        - task_key: transform_events
+          job_cluster_key: events_compute
+          spark_python_task:
+            python_file: ../src/transform_events.py
+            parameters:
+              - --run-date
+              - "{{job.parameters.run_date}}"
+              - --trigger-date
+              - "{{job.parameters.trigger_date}}"
+```
+
+The `pyspark_job` discriminator selects `spark_python_task`. Because Airflow 2 `{{ ds }}` denotes the prior interval for this daily schedule, the script uses an explicit `run_date` when supplied and otherwise subtracts one calendar day from `trigger_date`; Airflow 3 raw-cron semantics require a separate decision. Create, wait, and delete tasks collapse because their IDs and outputs have no other consumers; the native task becomes the execution boundary. The static primary worker count is preserved, the Dataproc image and machine type remain required user mappings, and the YARN property is removed and documented. The complete checked-in conversion, including required variables and `MIGRATION_NOTES.md`, is in `examples/dataproc/`. See `references/dataproc-migration.md` for batch, JAR, SQL, R, workflow-template, retained-external, and unsupported-engine rules.
