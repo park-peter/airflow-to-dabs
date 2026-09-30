@@ -36,6 +36,10 @@
     {
       "path": "../../references/hadoop-migration-guide.md",
       "purpose": "Spark-submit, HDFS, Hive, and Hadoop semantic guidance"
+    },
+    {
+      "path": "../../references/dataproc-migration.md",
+      "purpose": "Dataproc payload routing, compute constraints, lifecycle collapse, and sensor semantics"
     }
   ],
   "fixtures": [

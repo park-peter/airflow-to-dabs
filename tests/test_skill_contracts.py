@@ -84,6 +84,13 @@ def test_plugin_manifests_install_the_root_skill():
     assert not (ROOT / "skills").exists(), "a skills/ directory would replace the root SKILL.md"
 
 
+def test_gap_resolver_vendors_dataproc_knowledge():
+    provider = json.loads(_text("providers/flowx-gap-resolver/provider.json"))
+    knowledge_paths = {entry["path"] for entry in provider["knowledge"]}
+
+    assert "../../references/dataproc-migration.md" in knowledge_paths
+
+
 def test_skill_carries_every_hardening_contract():
     missing = sorted(REQUIRED_CONTRACTS - _anchors("SKILL.md"))
     assert not missing, f"SKILL.md is missing contracts: {missing}"
