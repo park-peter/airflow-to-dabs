@@ -78,7 +78,7 @@ claude plugin install airflow-to-dabs@airflow-to-dabs
 }
 ```
 
-The plugin version is the git commit it was installed from. Update with `claude plugin marketplace update airflow-to-dabs` followed by `claude plugin update airflow-to-dabs@airflow-to-dabs`; remove with `claude plugin uninstall airflow-to-dabs@airflow-to-dabs`.
+To pin a release, add the marketplace at a tag (`park-peter/airflow-to-dabs#<tag>`), or set `"ref": "<tag>"` in the `source` object above. The plugin version is the git commit it was installed from. Update with `claude plugin marketplace update airflow-to-dabs` followed by `claude plugin update airflow-to-dabs@airflow-to-dabs`; remove with `claude plugin uninstall airflow-to-dabs@airflow-to-dabs`.
 
 ### npx skills (any supported agent)
 
