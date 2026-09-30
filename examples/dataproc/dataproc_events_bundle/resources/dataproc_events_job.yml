@@ -1,0 +1,45 @@
+resources:
+  jobs:
+    dataproc_events_job:
+      name: dataproc-events
+      queue:
+        enabled: true
+      schedule:
+        quartz_cron_expression: 0 0 2 * * ?
+        timezone_id: America/Los_Angeles
+        pause_status: UNPAUSED
+      parameters:
+        - name: run_date
+          default: ""
+        - name: trigger_date
+          default: "{{job.trigger.time.iso_date}}"
+        - name: input_path
+          default: ${var.input_path}
+        - name: output_table
+          default: ${var.output_table}
+      job_clusters:
+        - job_cluster_key: events_compute
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 4
+            spark_conf:
+              spark.sql.adaptive.enabled: "true"
+              spark.sql.shuffle.partitions: "200"
+      tasks:
+        - task_key: transform_events
+          job_cluster_key: events_compute
+          max_retries: 2
+          min_retry_interval_millis: 300000
+          timeout_seconds: 7200
+          spark_python_task:
+            python_file: ../src/transform_events.py
+            parameters:
+              - --input
+              - "{{job.parameters.input_path}}"
+              - --output-table
+              - "{{job.parameters.output_table}}"
+              - --run-date
+              - "{{job.parameters.run_date}}"
+              - --trigger-date
+              - "{{job.parameters.trigger_date}}"

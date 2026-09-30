@@ -23,6 +23,7 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 - **Source-aware routing**: maps by connection, not class alone (`operator → connection → intent → direction → destination → strategy`) — Databricks SQL → `sql_task`, remote federatable DB → Lakehouse Federation, recurring ingestion → Lakeflow Connect; fail-closed on unresolved connections
 - **Lakeflow Connect ingestion**: routes recurring source→Delta ingestion (CDC, query-based, and foreign-catalog incl. Snowflake→Delta) to a DABs managed-ingestion pipeline (see [`references/lakeflow-connect.md`](references/lakeflow-connect.md))
 - **Snowflake operators**: federation (read), query-based foreign-catalog ingestion (recurring copy), or connector notebook — by intent
+- **Dataproc operators**: payload-aware conversion of Dataproc and Managed Spark jobs/batches to native Python, JAR, SQL, or R notebook tasks; cluster lifecycle and wait sensors collapse into Lakeflow Jobs semantics
 - Converts Airflow cron expressions and presets to Quartz cron format
 - Converts Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (`file_arrival`, `table_update`)
 - Extracts inline Python, SQL, and bash into standalone source files
@@ -38,8 +39,8 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 | Tier | Description | Examples |
 |------|-------------|----------|
 | **1 — Direct** | 1:1 mapping to a DABs task type | `PythonOperator`, `BashOperator`, `SparkSubmitOperator`, `DatabricksSubmitRunOperator`, `DatabricksRunNowOperator`, `DatabricksNotebookOperator`, `DatabricksSqlOperator`, `DatabricksSQLStatementsOperator`, `DatabricksCopyIntoOperator`, `SQLExecuteQueryOperator`, `DbtOperator`, `TriggerDagRunOperator`, `HiveOperator`, `SSHOperator` |
-| **2 — Semantic** | Requires reasoning about intent | cosmos `DbtDag`/`DbtTaskGroup`†, dynamic task mapping (`.expand()`), mapped task groups (`@task_group.expand()`), Snowflake operators (`SnowflakeSqlApiOperator`, `snowpark_task`), SQL data-quality checks (`SQLColumnCheckOperator`/`SQLTableCheckOperator`/…), cloud & messaging families (AWS/GCP/Azure/HTTP/SFTP/Kafka/Trino), `KubernetesPodOperator`, `DockerOperator`, `BranchPythonOperator`, `BranchDateTimeOperator`, `BranchDayOfWeekOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
-| **3 — Sensor** | Converted to job-level triggers | `S3KeySensor`, `DatabricksSqlSensor`, `DatabricksPartitionSensor`, `DatabricksSQLStatementsSensor`, `HdfsSensor`, `FileSensor`, `ExternalTaskSensor`, `SqlSensor`, `TimeSensor`, `BashSensor`, `PythonSensor` |
+| **2 — Semantic** | Requires reasoning about intent | Dataproc/Managed Spark operators (`DataprocSubmitJobOperator`, `DataprocCreateBatchOperator`, cluster lifecycle, workflow templates), cosmos `DbtDag`/`DbtTaskGroup`†, dynamic task mapping (`.expand()`), mapped task groups (`@task_group.expand()`), Snowflake operators (`SnowflakeSqlApiOperator`, `snowpark_task`), SQL data-quality checks (`SQLColumnCheckOperator`/`SQLTableCheckOperator`/…), cloud & messaging families (AWS/GCP/Azure/HTTP/SFTP/Kafka/Trino), `KubernetesPodOperator`, `DockerOperator`, `BranchPythonOperator`, `BranchDateTimeOperator`, `BranchDayOfWeekOperator`, `ShortCircuitOperator`, `DatabricksWorkflowTaskGroup`, `DatabricksTaskOperator`, `DatabricksCreateJobsOperator`, `SubDagOperator`, `TaskGroup`, `DummyOperator`, `EmailOperator`, `DatabricksReposCreateOperator`* |
+| **3 — Sensor** | Converted to job-level triggers or absorbed into native tasks | `DataprocJobSensor`, `DataprocBatchSensor`, `S3KeySensor`, `DatabricksSqlSensor`, `DatabricksPartitionSensor`, `DatabricksSQLStatementsSensor`, `HdfsSensor`, `FileSensor`, `ExternalTaskSensor`, `SqlSensor`, `TimeSensor`, `BashSensor`, `PythonSensor` |
 | **4 — Unsupported** | Flagged for manual review | Custom operators, `DbtCloudRunJobOperator`, `SqoopOperator`, `PigOperator`, XCom-heavy patterns |
 
 \* `DatabricksReposCreateOperator`, `DatabricksReposUpdateOperator`, and `DatabricksReposDeleteOperator` are infrastructure/repo-management operators with no DABs job task equivalent — they are omitted and noted in `MIGRATION_NOTES.md`.
@@ -47,6 +48,8 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 † dbt workloads (cosmos, dbt CLI operators, bash `dbt run`) default to **dbt factory mode** — a separate Python-generated job with one task per dbt object — with a single `dbt_task` as the documented fallback. See the dbt conversion decision point in [`references/operator-mapping.md`](references/operator-mapping.md).
 
 Full mapping details: [`references/operator-mapping.md`](references/operator-mapping.md)
+
+Dataproc details: [`references/dataproc-migration.md`](references/dataproc-migration.md)
 
 ## Installation
 
@@ -166,6 +169,12 @@ Recognizes the `airflow.sdk` and `apache-airflow-providers-standard` imports, ma
 
 Routes recurring source→Delta ingestion to a Lakeflow Connect managed-ingestion pipeline (Snowflake via a UC foreign catalog, `ingest_from_uc_foreign_catalog`) with a `pipeline_task` hop into the downstream transform. See [`examples/lakeflow-connect/`](examples/lakeflow-connect/) for a complete conversion.
 
+### Convert an Airflow DAG that orchestrates Dataproc
+
+> "Convert this Airflow DAG that creates a Dataproc cluster, submits a PySpark job, waits for it, and deletes the cluster"
+
+Routes the nested Dataproc payload rather than the operator name: the PySpark submission becomes a native `spark_python_task`, the cluster lifecycle and wait sensor collapse into Lakeflow Jobs compute/execution semantics, and unsupported Dataproc-only properties are called out explicitly. See [`references/dataproc-migration.md`](references/dataproc-migration.md) and [`examples/dataproc/`](examples/dataproc/).
+
 ## flowx Provider Profile
 
 [`providers/flowx-gap-resolver/`](providers/flowx-gap-resolver/) holds a machine-readable provider profile for flowx's fingerprint-bound Airflow gap workflow. In this mode:
@@ -189,6 +198,7 @@ The generated bundle uses placeholders for environment-specific values. Replace 
 | `<SERVICE_PRINCIPAL>` | `databricks.yml` → `targets.prod.run_as` | `my-deploy-sp` |
 | `<SPARK_VERSION>` | `databricks.yml` → `variables.spark_version` | `15.4.x-scala2.12` |
 | `<NODE_TYPE_ID>` | `databricks.yml` → `variables.node_type_id` | `i3.xlarge` (AWS), `Standard_D4s_v3` (Azure) |
+| `<NODE_TYPE_ID>` (GCP) | `databricks.yml` → `variables.node_type_id` | A workspace-supported GCP node type selected from `databricks clusters list-node-types`; Dataproc machine types are not copied or guessed |
 | `<WAREHOUSE_ID>` | `databricks.yml` → `variables.warehouse_id` | `abc123def456` |
 | `<WAREHOUSE_ID>` (factory mode) | `dbt_profiles/profiles.yml` → `http_path` | `/sql/1.0/warehouses/abc123def456` |
 | `<DBT_PROFILE_NAME>` (factory mode) | `dbt_profiles/profiles.yml` — must match `profile:` in `dbt_project.yml` | `orders_analytics` |
@@ -239,9 +249,10 @@ databricks bundle schema
 | [`references/operator-mapping.md`](references/operator-mapping.md) | Tier 1–4 mapping table with side-by-side Airflow/DABs YAML examples |
 | [`references/dab-schema-reference.md`](references/dab-schema-reference.md) | Condensed DABs YAML schema — all task types, triggers, clusters, variables |
 | [`references/schedule-trigger-mapping.md`](references/schedule-trigger-mapping.md) | Cron conversion, sensor-to-trigger mapping, Airflow 3 Asset/`AssetOrTimeSchedule` scheduling, `default_args` mapping, Jinja variable conversion |
-| [`references/conversion-examples.md`](references/conversion-examples.md) | 6 complete before/after examples (ETL chain, branching, sensor-triggered, multi-system, cosmos dbt factory mode, Airflow 3 dynamic mapping + mapped task group) |
+| [`references/conversion-examples.md`](references/conversion-examples.md) | 7 complete before/after examples (ETL chain, branching, sensor-triggered, multi-system, cosmos dbt factory mode, Airflow 3 dynamic mapping + mapped task group, Dataproc) |
 | [`references/airflow3-migration.md`](references/airflow3-migration.md) | Airflow 3 recognition — `airflow.sdk` + `apache-airflow-providers-standard` imports, Assets vs Datasets, asset scheduling, deferrable/native-async/resumable execution model, removed operators, recognize→safe-map→flag checklist |
 | [`references/lakeflow-connect.md`](references/lakeflow-connect.md) | Lakeflow Connect ingestion target — when to use it vs a Jobs task, CDC/query-based/foreign-catalog styles (incl. Snowflake→Delta), eligibility, DABs generation contract, continuous-vs-triggered orchestration, MIGRATION_NOTES checklist |
+| [`references/dataproc-migration.md`](references/dataproc-migration.md) | Dataproc/Managed Spark operator inventory, native task routing by payload, cluster lifecycle collapse, workflow templates, GCS/auth migration, retained-external fallback, validation checklist |
 | [`references/hadoop-migration-guide.md`](references/hadoop-migration-guide.md) | HDFS path conversion, YARN config cleanup, Hive-to-UC mapping, spark-submit detection, Sqoop alternatives, bulk conversion guidance |
 | [`assets/templates/`](assets/templates/) | Skeleton `databricks.yml`, job resource, and dbt factory mode templates (PyDABs hook, pyproject, Makefile, profiles) |
 | [`.claude-plugin/`](.claude-plugin/) | Claude Code plugin and marketplace manifests |

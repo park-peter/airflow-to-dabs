@@ -29,7 +29,9 @@ validate:
 		examples/customer-orders/customer_orders_bundle/resources/*.yml \
 		examples/dbt-cosmos/orders_analytics_bundle/resources/*.yml \
 		examples/lakeflow-connect/orders_replication_bundle/databricks.yml \
-		examples/lakeflow-connect/orders_replication_bundle/resources/*.yml
+		examples/lakeflow-connect/orders_replication_bundle/resources/*.yml \
+		examples/dataproc/dataproc_events_bundle/databricks.yml \
+		examples/dataproc/dataproc_events_bundle/resources/*.yml
 
 validate-plugin:
 	claude plugin validate .
