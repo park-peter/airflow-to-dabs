@@ -295,6 +295,16 @@ def test_dataproc_sensor_mapping_treats_batch_output_as_an_object():
     assert re.search(r"batch (dictionary|dict|object)", section, re.IGNORECASE)
 
 
+def test_backfill_date_is_not_described_as_airflow_interval_start():
+    for relative_path in (
+        "references/dab-schema-reference.md",
+        "references/schedule-trigger-mapping.md",
+    ):
+        lines = [line for line in _text(relative_path).splitlines() if "backfill.iso_date" in line]
+        assert lines
+        assert any("scheduled trigger date" in line.lower() for line in lines)
+
+
 def test_manifest_recipe_fails_when_dbt_does_not_write_manifest():
     for relative_path in (
         "assets/templates/dbt-Makefile.tmpl",

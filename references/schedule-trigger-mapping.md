@@ -335,7 +335,7 @@ is ambiguous** — do not default silently.
 `{{ ds }}` must map to a named **job parameter** (e.g. `run_date`), never a hardcoded date or an
 inline `{{job.start_time...}}` buried in a task. Native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs)
 replays a job over a historical range by **overriding an existing date/time job parameter** per
-replayed window with `{{backfill.iso_date}}` (the start of that window's range). What makes a job
+replayed window with `{{backfill.iso_date}}` (the replayed run's scheduled trigger date, not Airflow's prior data-interval date). What makes a job
 backfillable is that such a parameter **exists** to be overridden — a job that hardcodes the date or
 computes it inline from `{{job.start_time...}}` gives backfill nothing to override, so history cannot
 be replayed for the right window. (During a backfill the override wins regardless of the parameter's
