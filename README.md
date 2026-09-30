@@ -6,12 +6,15 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 
 ## Platform Support
 
-| Platform | Instruction File | Global (personal) | Project-scoped |
-|----------|------------------|--------------------|----------------|
-| **Cursor** | `SKILL.md` | `~/.cursor/skills/airflow-to-dabs/` | `.cursor/skills/airflow-to-dabs/` |
-| **Claude Code** | `SKILL.md` | `~/.claude/skills/airflow-to-dabs/` | `.claude/skills/airflow-to-dabs/` |
-| **Codex CLI** | `AGENTS.md` | `~/.codex/AGENTS.md` | `./AGENTS.md` |
-| **VS Code + Copilot** | `copilot-instructions.md` | — | `.github/copilot-instructions.md` |
+`SKILL.md` follows the open [Agent Skills](https://agentskills.io) format, so one skill folder works across coding agents:
+
+| Agent | Global | Project |
+|-------|--------|---------|
+| **Claude Code** | `~/.claude/skills/airflow-to-dabs/` or the Claude Code plugin | `.claude/skills/airflow-to-dabs/` |
+| **Codex** | `~/.agents/skills/airflow-to-dabs/` | `.agents/skills/airflow-to-dabs/` |
+| **Cursor** | `~/.agents/skills/airflow-to-dabs/` | `.agents/skills/airflow-to-dabs/` |
+| **VS Code + GitHub Copilot** | `~/.agents/skills/airflow-to-dabs/` | `.agents/skills/airflow-to-dabs/` |
+| **Gemini CLI, Windsurf, Kiro, Junie, Roo Code, OpenCode, and more** | via `npx skills` | via `npx skills` |
 
 ## What It Does
 
@@ -47,208 +50,87 @@ Full mapping details: [`references/operator-mapping.md`](references/operator-map
 
 ## Installation
 
-### Quick install (recommended)
+### npx skills (recommended)
 
-Clone the repo, inspect the script if you like, then run it:
-
-```bash
-git clone https://github.com/park-peter/airflow-to-dabs.git
-cd airflow-to-dabs
-./install.sh
-```
-
-The interactive installer prompts you to choose a platform and scope:
-
-```
-Select platform:
-  1) Cursor
-  2) Claude Code
-  3) Codex CLI
-  4) VS Code + Copilot
-
-Select scope:
-  1) Global (all projects)
-  2) Project (current directory only)
-```
-
-### Non-interactive (flags)
+[`skills`](https://github.com/vercel-labs/skills) installs the skill into any supported coding agent:
 
 ```bash
-./install.sh --platform cursor --scope global
+npx skills add park-peter/airflow-to-dabs
 ```
 
-### Uninstall
+It detects your agents and asks where to install. To choose them up front:
 
 ```bash
-./install.sh --platform cursor --scope global --uninstall
+npx skills add park-peter/airflow-to-dabs -g -a claude-code -a codex -a cursor -a github-copilot -y
 ```
 
-### Remote one-liner (optional)
+`-g` installs for all projects instead of the current one. Agent ids include `claude-code`, `codex`, `cursor`, `github-copilot`, `gemini-cli`, `windsurf`, `kiro-cli`, `junie`, `roo`, and `opencode`. `npx skills update` and `npx skills remove airflow-to-dabs` update and remove it.
+
+### Claude Code plugin
+
+This repository is its own Claude Code plugin marketplace. In a Claude Code session:
+
+```
+/plugin marketplace add park-peter/airflow-to-dabs
+/plugin install airflow-to-dabs@airflow-to-dabs
+```
+
+Or from a shell:
+
+```bash
+claude plugin marketplace add park-peter/airflow-to-dabs
+claude plugin install airflow-to-dabs@airflow-to-dabs
+```
+
+`--scope project` records the plugin in the project's `.claude/settings.json` so everyone who clones the project gets it. To preconfigure a project by hand, commit:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "airflow-to-dabs": {
+      "source": { "source": "github", "repo": "park-peter/airflow-to-dabs" }
+    }
+  },
+  "enabledPlugins": {
+    "airflow-to-dabs@airflow-to-dabs": true
+  }
+}
+```
+
+To pin a release, add the marketplace at a tag (`park-peter/airflow-to-dabs#<tag>`), or set `"ref": "<tag>"` in the `source` object above. The plugin version is the git commit it was installed from. Update with `claude plugin marketplace update airflow-to-dabs` followed by `claude plugin update airflow-to-dabs@airflow-to-dabs`; remove with `claude plugin uninstall airflow-to-dabs@airflow-to-dabs`.
+
+### install.sh (no Node.js)
+
+`install.sh` clones the skill with `git`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/park-peter/airflow-to-dabs/main/install.sh | sh
 ```
 
-Pass flags with `sh -s --`:
+It asks which agents and scope to install for. To skip the prompts:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/park-peter/airflow-to-dabs/main/install.sh | sh -s -- --platform claude --scope project
+curl -fsSL https://raw.githubusercontent.com/park-peter/airflow-to-dabs/main/install.sh | sh -s -- --platform all --scope global
 ```
 
-### Manual installation
+| `--platform` | Installs to |
+|--------------|-------------|
+| `claude` | `~/.claude/skills/airflow-to-dabs` (global) or `.claude/skills/airflow-to-dabs` (project) |
+| `agents` (also `codex`, `cursor`, `copilot`) | `~/.agents/skills/airflow-to-dabs` (global) or `.agents/skills/airflow-to-dabs` (project) |
+| `all` | Both |
 
-<details>
-<summary><strong>Cursor</strong></summary>
+Re-run the same command to update. Add `--uninstall` to remove.
 
-**Global** (all projects):
+### Manual
+
+Clone the repo into a skills directory from the Platform Support table:
 
 ```bash
-mkdir -p ~/.cursor/skills
-if [ -d ~/.cursor/skills/airflow-to-dabs/.git ]; then
-  git -C ~/.cursor/skills/airflow-to-dabs pull --ff-only
-else
-  git clone https://github.com/park-peter/airflow-to-dabs.git ~/.cursor/skills/airflow-to-dabs
-fi
+git clone https://github.com/park-peter/airflow-to-dabs.git ~/.agents/skills/airflow-to-dabs   # Codex, Cursor, VS Code Copilot
+git clone https://github.com/park-peter/airflow-to-dabs.git ~/.claude/skills/airflow-to-dabs   # Claude Code
 ```
 
-**Project-scoped** (single project):
-
-```bash
-mkdir -p .cursor/skills
-if [ -d .cursor/skills/airflow-to-dabs/.git ]; then
-  git -C .cursor/skills/airflow-to-dabs pull --ff-only
-else
-  git clone https://github.com/park-peter/airflow-to-dabs.git .cursor/skills/airflow-to-dabs
-fi
-```
-
-</details>
-
-<details>
-<summary><strong>Claude Code</strong></summary>
-
-**Personal** (all projects):
-
-```bash
-mkdir -p ~/.claude/skills
-if [ -d ~/.claude/skills/airflow-to-dabs/.git ]; then
-  git -C ~/.claude/skills/airflow-to-dabs pull --ff-only
-else
-  git clone https://github.com/park-peter/airflow-to-dabs.git ~/.claude/skills/airflow-to-dabs
-fi
-```
-
-**Project-scoped** (single project):
-
-```bash
-mkdir -p .claude/skills
-if [ -d .claude/skills/airflow-to-dabs/.git ]; then
-  git -C .claude/skills/airflow-to-dabs pull --ff-only
-else
-  git clone https://github.com/park-peter/airflow-to-dabs.git .claude/skills/airflow-to-dabs
-fi
-```
-
-</details>
-
-<details>
-<summary><strong>Codex CLI</strong></summary>
-
-**Global** (all projects):
-
-```bash
-mkdir -p ~/.codex/skills
-if [ -d ~/.codex/skills/airflow-to-dabs/.git ]; then
-  git -C ~/.codex/skills/airflow-to-dabs pull --ff-only
-else
-  git clone https://github.com/park-peter/airflow-to-dabs.git ~/.codex/skills/airflow-to-dabs
-fi
-touch ~/.codex/AGENTS.md
-cp ~/.codex/AGENTS.md ~/.codex/AGENTS.md.bak.$(date +%Y%m%d%H%M%S)
-BEGIN_MARK="<!-- BEGIN airflow-to-dabs -->"
-END_MARK="<!-- END airflow-to-dabs -->"
-if grep -Fq "$BEGIN_MARK" ~/.codex/AGENTS.md && grep -Fq "$END_MARK" ~/.codex/AGENTS.md; then
-  awk -v begin="$BEGIN_MARK" -v end="$END_MARK" '
-    $0 == begin {skip=1; next}
-    $0 == end {skip=0; next}
-    !skip {print}
-  ' ~/.codex/AGENTS.md > ~/.codex/AGENTS.md.tmp
-  mv ~/.codex/AGENTS.md.tmp ~/.codex/AGENTS.md
-fi
-{
-  [ -s ~/.codex/AGENTS.md ] && echo
-  echo "$BEGIN_MARK"
-  cat ~/.codex/skills/airflow-to-dabs/AGENTS.md
-  echo "$END_MARK"
-} >> ~/.codex/AGENTS.md
-```
-
-**Project-scoped** (single project):
-
-```bash
-mkdir -p .codex/skills
-if [ -d .codex/skills/airflow-to-dabs/.git ]; then
-  git -C .codex/skills/airflow-to-dabs pull --ff-only
-else
-  git clone https://github.com/park-peter/airflow-to-dabs.git .codex/skills/airflow-to-dabs
-fi
-touch ./AGENTS.md
-cp ./AGENTS.md ./AGENTS.md.bak.$(date +%Y%m%d%H%M%S)
-BEGIN_MARK="<!-- BEGIN airflow-to-dabs -->"
-END_MARK="<!-- END airflow-to-dabs -->"
-if grep -Fq "$BEGIN_MARK" ./AGENTS.md && grep -Fq "$END_MARK" ./AGENTS.md; then
-  awk -v begin="$BEGIN_MARK" -v end="$END_MARK" '
-    $0 == begin {skip=1; next}
-    $0 == end {skip=0; next}
-    !skip {print}
-  ' ./AGENTS.md > ./AGENTS.md.tmp
-  mv ./AGENTS.md.tmp ./AGENTS.md
-fi
-{
-  [ -s ./AGENTS.md ] && echo
-  echo "$BEGIN_MARK"
-  cat .codex/skills/airflow-to-dabs/AGENTS.md
-  echo "$END_MARK"
-} >> ./AGENTS.md
-```
-
-</details>
-
-<details>
-<summary><strong>VS Code + Copilot</strong></summary>
-
-**Project-scoped** (project-only — no global install):
-
-```bash
-SKILL_DIR=$(mktemp -d)
-git clone https://github.com/park-peter/airflow-to-dabs.git "$SKILL_DIR"
-mkdir -p .github
-touch .github/copilot-instructions.md
-cp .github/copilot-instructions.md .github/copilot-instructions.md.bak.$(date +%Y%m%d%H%M%S)
-
-BEGIN_MARK="<!-- BEGIN airflow-to-dabs -->"
-END_MARK="<!-- END airflow-to-dabs -->"
-
-if grep -Fq "$BEGIN_MARK" .github/copilot-instructions.md && grep -Fq "$END_MARK" .github/copilot-instructions.md; then
-  awk -v begin="$BEGIN_MARK" -v end="$END_MARK" '
-    $0 == begin {skip=1; next}
-    $0 == end {skip=0; next}
-    !skip {print}
-  ' .github/copilot-instructions.md > .github/copilot-instructions.md.tmp
-  mv .github/copilot-instructions.md.tmp .github/copilot-instructions.md
-fi
-
-{
-  [ -s .github/copilot-instructions.md ] && echo
-  echo "$BEGIN_MARK"
-  cat "$SKILL_DIR/copilot-instructions.md"
-  echo "$END_MARK"
-} >> .github/copilot-instructions.md
-
-rm -rf "$SKILL_DIR"
-```
-
-</details>
+Update with `git -C <dir> pull --ff-only`.
 
 ## Usage
 
@@ -323,9 +205,10 @@ make test             # contract + dbt glue suites
 make test-contracts   # cross-surface rule coverage and structural checks
 make test-glue        # regression tests for the generated PyDABs dbt glue
 make validate         # schema-validate the checked-in example bundles
+make validate-plugin  # validate the Claude Code plugin and marketplace manifests
 ```
 
-`tests/test_skill_contracts.py` matches each hardening rule through the `<!-- contract: id -->` anchors carried by `SKILL.md`, `AGENTS.md`, and `copilot-instructions.md`, so a rule dropped from one surface fails the build while rewording does not. Add an anchor to all three surfaces when adding a rule.
+`tests/test_skill_contracts.py` matches each hardening rule through the `<!-- contract: id -->` anchors in `SKILL.md`, so a dropped rule fails the build while rewording does not. Add an anchor when adding a rule.
 
 ## Validation
 
@@ -361,7 +244,7 @@ databricks bundle schema
 | [`references/lakeflow-connect.md`](references/lakeflow-connect.md) | Lakeflow Connect ingestion target — when to use it vs a Jobs task, CDC/query-based/foreign-catalog styles (incl. Snowflake→Delta), eligibility, DABs generation contract, continuous-vs-triggered orchestration, MIGRATION_NOTES checklist |
 | [`references/hadoop-migration-guide.md`](references/hadoop-migration-guide.md) | HDFS path conversion, YARN config cleanup, Hive-to-UC mapping, spark-submit detection, Sqoop alternatives, bulk conversion guidance |
 | [`assets/templates/`](assets/templates/) | Skeleton `databricks.yml`, job resource, and dbt factory mode templates (PyDABs hook, pyproject, Makefile, profiles) |
-| [`AGENTS.md`](AGENTS.md) | Codex CLI instruction file (same workflow as SKILL.md) |
+| [`.claude-plugin/`](.claude-plugin/) | Claude Code plugin and marketplace manifests |
 
 ## Example Output
 

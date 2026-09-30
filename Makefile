@@ -1,10 +1,11 @@
-.PHONY: help test test-contracts test-glue validate
+.PHONY: help test test-contracts test-glue validate validate-plugin
 
 help:
 	@echo "test           Run every check (contracts + dbt glue)"
 	@echo "test-contracts Cross-surface and structural checks for the skill's rules"
 	@echo "test-glue      Regression tests for the generated PyDABs dbt glue"
 	@echo "validate       Schema-validate the checked-in example bundles"
+	@echo "validate-plugin Validate the Claude Code plugin and marketplace manifests"
 
 test: test-contracts test-glue
 
@@ -29,3 +30,6 @@ validate:
 		examples/dbt-cosmos/orders_analytics_bundle/resources/*.yml \
 		examples/lakeflow-connect/orders_replication_bundle/databricks.yml \
 		examples/lakeflow-connect/orders_replication_bundle/resources/*.yml
+
+validate-plugin:
+	claude plugin validate .

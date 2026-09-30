@@ -58,7 +58,7 @@ yq '.resources.jobs.orders_replication_job.tasks[] | select(.task_key=="replicat
 
 SOURCE_DAG=../airflow/orders_replication_dag.py
 OPERATOR_MAPPING=../../../references/operator-mapping.md
-COPILOT_RULES=../../../copilot-instructions.md
+LAKEFLOW_CONNECT=../../../references/lakeflow-connect.md
 grep -Fq 'get_current_context()' "$SOURCE_DAG" \
   || { echo "FAIL: source DAG must read the runtime context for its watermark"; exit 1; }
 grep -Fq 'BOOTSTRAP_WATERMARK' "$SOURCE_DAG" \
@@ -73,12 +73,8 @@ grep -Fq 'MERGE INTO {TARGET_TABLE}' "$SOURCE_DAG" \
   || { echo "FAIL: source DAG still contains a placeholder destination write"; exit 1; }
 grep -Fq 'Provider-specific operators bind to their database hooks' "$OPERATOR_MAPPING" \
   || { echo "FAIL: operator mapping must distinguish provider-specific SQL operators"; exit 1; }
-grep -Fq 'Provider-specific `PostgresOperator` / `MySqlOperator`' "$COPILOT_RULES" \
-  || { echo "FAIL: Copilot SQL operator guidance is stale"; exit 1; }
-grep -Fq 'foreign-catalog ingestion covers all Lakehouse Federation sources' "$COPILOT_RULES" \
-  || { echo "FAIL: Copilot foreign-catalog source guidance is stale"; exit 1; }
-! grep -Fq "can't combine with a normal pipeline's" "$COPILOT_RULES" \
-  || { echo "FAIL: Copilot ingestion field-combination guidance is stale"; exit 1; }
+grep -Fq 'foreign-catalog ingestion covers **all Lakehouse Federation sources**' "$LAKEFLOW_CONNECT" \
+  || { echo "FAIL: Lakeflow Connect reference must cover every Lakehouse Federation source"; exit 1; }
 echo "  structural checks OK"
 
 echo "== Offline schema validation (uv + check-jsonschema, credential-free) =="

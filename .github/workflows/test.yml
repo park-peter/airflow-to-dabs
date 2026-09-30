@@ -25,3 +25,15 @@ jobs:
       - name: dbt glue regression tests
         working-directory: examples/dbt-cosmos/orders_analytics_bundle
         run: uv run pytest tests -q
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate the Claude Code plugin and marketplace manifests
+        run: make validate-plugin

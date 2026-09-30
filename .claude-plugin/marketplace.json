@@ -1,0 +1,14 @@
+{
+  "name": "airflow-to-dabs",
+  "owner": { "name": "Peter Park", "url": "https://github.com/park-peter" },
+  "metadata": {
+    "description": "Airflow to Databricks Declarative Automation Bundles migration skill."
+  },
+  "plugins": [
+    {
+      "name": "airflow-to-dabs",
+      "source": "./",
+      "description": "Convert Apache Airflow DAGs into Databricks Declarative Automation Bundles."
+    }
+  ]
+}

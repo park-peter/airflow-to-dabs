@@ -38,13 +38,14 @@ The skill encodes the workflow, mappings, schemas, validation steps, and fallbac
 
 ## 3. Physical Repository Layout
 
-The skill is packaged as a folder with one primary instruction file, companion platform instruction files, references, templates, and installation helpers:
+The skill is packaged as a folder with one instruction file, references, templates, and installation helpers:
 
 ```text
 airflow-to-dabs/
   SKILL.md
-  AGENTS.md
-  copilot-instructions.md
+  .claude-plugin/
+    plugin.json
+    marketplace.json
   README.md
   install.sh
   references/
@@ -83,7 +84,7 @@ An agent skill uses progressive disclosure. The agent does not need to load ever
 | Core instructions | `SKILL.md` body | Loaded after the skill triggers | Defines workflow, outputs, rules, and validation contract. |
 | References | `references/*.md` | Loaded selectively | Holds large mapping tables, schema examples, schedule rules, and edge cases. |
 | Assets | `assets/templates/*.tmpl` | Used when generating files | Provides starting skeletons for bundle YAML. |
-| Platform adapters | `AGENTS.md`, `copilot-instructions.md` | Loaded by platforms that do not consume `SKILL.md` directly | Carries the same behavior into Codex, Copilot, and similar instruction systems. |
+| Plugin manifests | `.claude-plugin/*.json` | Read by the Claude Code plugin installer | Publishes the repo as a single-skill Claude Code plugin marketplace. |
 
 This matters because agent context is limited. The skill keeps the always-loaded surface small and pushes detailed mappings into references that are read only when needed.
 
@@ -156,41 +157,25 @@ resources:
 
 The agent can adapt them based on DAG content. For example, if the DAG has a file sensor, the generated job should use `trigger.file_arrival`; if it has a cron schedule and no event sensor, the job should use `schedule.quartz_cron_expression`.
 
-## 8. Platform-Specific Instruction Files
+## 8. One Skill Across Agents
 
-Different agent products consume instructions differently, so the repo includes platform adapters.
+`SKILL.md` follows the open [Agent Skills](https://agentskills.io) format. Every supported agent reads the same file from its skills directory and loads `references/` and `assets/` by relative path:
 
-| Platform | File | Behavior |
-|---|---|---|
-| Cursor | `SKILL.md` | Installed under `.cursor/skills/...` or `~/.cursor/skills/...`; Cursor can use the skill metadata and body. |
-| Claude Code | `SKILL.md` | Installed under `.claude/skills/...` or `~/.claude/skills/...`. |
-| Codex CLI | `AGENTS.md` | Appended into project or global `AGENTS.md`; Codex receives it as project instructions. |
-| VS Code + Copilot | `copilot-instructions.md` | Appended into `.github/copilot-instructions.md`; uses embedded mappings because Copilot instructions should not rely on local skill reference loading. |
+| Agent | Skills directory |
+|---|---|
+| Claude Code | `~/.claude/skills/` or `.claude/skills/`, or the Claude Code plugin |
+| Codex, Cursor, VS Code + GitHub Copilot | `~/.agents/skills/` or `.agents/skills/` |
+| Gemini CLI, Windsurf, Kiro, Junie, Roo Code, OpenCode, and others | the agent's own directory, populated by `npx skills` |
 
-`AGENTS.md` is a condensed version of the skill. It exists because Codex project instructions are read from `AGENTS.md`, not necessarily from Cursor or Claude skill directories.
+## 9. Distribution
 
-`copilot-instructions.md` is more self-contained. It embeds a mapping snapshot because Copilot instruction files are not guaranteed to load sibling reference files on demand.
+Three install paths put the same folder in place:
 
-## 9. Installer Design
+- `npx skills add park-peter/airflow-to-dabs` installs into any agent the `skills` CLI supports.
+- The `.claude-plugin/` manifests make the repo a Claude Code plugin marketplace; installs are keyed to the git commit.
+- `install.sh` clones or fast-forwards the repo into `~/.claude/skills/`, `~/.agents/skills/`, or both, for machines without Node.js.
 
-`install.sh` makes installation repeatable across platforms.
-
-The important implementation behaviors are:
-
-- It clones or fast-forwards the skill repo into the correct platform directory.
-- For Codex and Copilot, it writes into an existing instruction file using marker blocks:
-
-```text
-<!-- BEGIN airflow-to-dabs -->
-...
-<!-- END airflow-to-dabs -->
-```
-
-- It backs up files before modifying them.
-- It replaces a stale marked block on reinstall instead of appending duplicate instructions.
-- It validates marker ordering so malformed `BEGIN`/`END` blocks do not accidentally delete user content.
-
-This is separate from the skill itself. The skill is the instruction package; the installer is just distribution and update plumbing.
+Distribution is separate from the skill itself. The skill is the instruction package; the installers are plumbing.
 
 ## 10. How An Agent Interprets The Skill
 
@@ -299,25 +284,11 @@ The skill requires validation beyond "files exist":
 
 ### 12.1 Install
 
-For Cursor:
-
 ```bash
-git clone https://github.com/park-peter/airflow-to-dabs.git ~/.cursor/skills/airflow-to-dabs
+npx skills add park-peter/airflow-to-dabs
 ```
 
-For project-scoped Cursor usage:
-
-```bash
-git clone https://github.com/park-peter/airflow-to-dabs.git .cursor/skills/airflow-to-dabs
-```
-
-The repo also includes:
-
-```bash
-./install.sh
-```
-
-for guided installation across Cursor, Claude Code, Codex, and VS Code + Copilot.
+Claude Code users can install the plugin instead (`/plugin marketplace add park-peter/airflow-to-dabs`, then `/plugin install airflow-to-dabs@airflow-to-dabs`). Without Node.js, run `install.sh`. See the repository README for every option.
 
 ### 12.2 Invoke
 
@@ -508,7 +479,7 @@ This skill works because it separates responsibilities:
 - `SKILL.md` tells the agent how to think and what workflow to follow.
 - `references/` gives the agent detailed domain knowledge on demand.
 - `assets/` gives the agent reusable output skeletons.
-- `AGENTS.md` and `copilot-instructions.md` adapt the same intent for platforms with different instruction-loading models.
+- One `SKILL.md` serves every agent that reads the Agent Skills format.
 - The generated example proves the workflow can produce a Databricks bundle that passes `databricks bundle validate`.
 
 The result is not a black-box converter. It is an agent-guided migration workflow with explicit mapping decisions, generated code, deployable bundle structure, and migration notes for the places where human judgment still matters.

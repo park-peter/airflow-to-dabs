@@ -1,30 +1,26 @@
-"""Cross-surface and structural checks for the skill's behavior-shaping rules.
+"""Structural checks for the skill's behavior-shaping rules.
 
-The three instruction surfaces are authored separately: `SKILL.md` (Cursor/Claude) and
-`AGENTS.md` (Codex) point at `references/`, while `copilot-instructions.md` restates the
-rules because Copilot cannot read sibling files. Their prose differs by design, so these
+`SKILL.md` is the single instruction surface; it defers detail to `references/`. These
 tests check two things that survive rewording:
 
-* every hardening rule is carried by every surface, matched on `<!-- contract: id -->`
+* every hardening rule is carried by `SKILL.md`, matched on `<!-- contract: id -->`
   anchors rather than on sentences;
 * the parts with machine-readable structure (bundle YAML, Make recipes, code fences,
-  operator sections) assert on that structure.
+  operator sections, plugin manifests) assert on that structure.
 
 Run with: make test
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-INSTRUCTION_FILES = ("SKILL.md", "AGENTS.md", "copilot-instructions.md")
-
-# Every rule an agent must apply regardless of harness. A rule added to one surface and
-# forgotten on another fails here.
+# Every rule an agent must apply. Removing a rule's anchor from SKILL.md fails here.
 REQUIRED_CONTRACTS = frozenset(
     {
         "bundles-product-name",
@@ -68,33 +64,34 @@ def test_skill_frontmatter_carries_only_the_discovery_keys():
     assert "Declarative Automation Bundles" in frontmatter["description"]
 
 
-def test_every_surface_carries_every_hardening_contract():
-    for relative_path in INSTRUCTION_FILES:
-        present = _anchors(relative_path)
-        missing = sorted(REQUIRED_CONTRACTS - present)
-        assert not missing, f"{relative_path} is missing contracts: {missing}"
+def test_plugin_manifests_install_the_root_skill():
+    # The repo is its own single-plugin marketplace; the root SKILL.md loads as the plugin's
+    # only skill. With no manifest version, installs are keyed to the git commit.
+    skill_name = yaml.safe_load(_text("SKILL.md").split("---\n", 2)[1])["name"]
+    plugin = json.loads(_text(".claude-plugin/plugin.json"))
+    marketplace = json.loads(_text(".claude-plugin/marketplace.json"))
+    [entry] = marketplace["plugins"]
+
+    assert plugin["name"] == skill_name
+    assert entry["name"] == skill_name
+    assert entry["source"] == "./"
+    assert "version" not in plugin
+    assert "version" not in entry
+    assert not (ROOT / "skills").exists(), "a skills/ directory would replace the root SKILL.md"
 
 
-def test_no_surface_declares_an_unknown_contract():
-    for relative_path in INSTRUCTION_FILES:
-        unknown = sorted(_anchors(relative_path) - REQUIRED_CONTRACTS)
-        assert not unknown, f"{relative_path} declares unknown contracts: {unknown}"
+def test_skill_carries_every_hardening_contract():
+    missing = sorted(REQUIRED_CONTRACTS - _anchors("SKILL.md"))
+    assert not missing, f"SKILL.md is missing contracts: {missing}"
 
 
-def test_copilot_defines_every_helper_it_tells_the_agent_to_call():
-    # Copilot cannot read `references/`, so an identifier it names must be defined in it.
-    copilot = _text("copilot-instructions.md")
-    called = set(re.findall(r"call `([a-z_][a-z0-9_]*)\(", copilot))
-    defined = {
-        name
-        for block in _FENCED_PYTHON.findall(copilot)
-        for name in re.findall(r"^def ([a-z_][a-z0-9_]*)\(", block, re.MULTILINE)
-    }
-    assert called <= defined, f"named but undefined in copilot-instructions.md: {sorted(called - defined)}"
+def test_skill_declares_no_unknown_contract():
+    unknown = sorted(_anchors("SKILL.md") - REQUIRED_CONTRACTS)
+    assert not unknown, f"SKILL.md declares unknown contracts: {unknown}"
 
 
 def test_recursive_listing_helper_is_bounded_and_portable():
-    for relative_path in ("references/operator-mapping.md", "copilot-instructions.md"):
+    for relative_path in ("references/operator-mapping.md",):
         blocks = [b for b in _FENCED_PYTHON.findall(_text(relative_path)) if "list_files_recursive" in b]
         assert blocks, f"{relative_path} has no list_files_recursive definition"
         for block in blocks:
