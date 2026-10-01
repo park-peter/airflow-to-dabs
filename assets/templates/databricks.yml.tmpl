@@ -10,16 +10,17 @@ bundle:
 include:
   - resources/*.yml
 
+# Declare each variable only when a generated task uses it, with no default, so
+# `databricks bundle validate` reports the value the user must supply.
 variables:
+  # Only when a task runs on classic job compute.
   spark_version:
-    description: Spark runtime version (set per workspace policy/cloud)
-    default: "<SPARK_VERSION>"
+    description: Databricks Runtime for classic job compute
   node_type_id:
-    description: Cluster node type (set per workspace policy/cloud)
-    default: "<NODE_TYPE_ID>"
+    description: Workspace-supported node type for classic job compute
+  # Only when the bundle has a sql_task.
   warehouse_id:
     description: SQL warehouse ID for SQL tasks
-    default: "<WAREHOUSE_ID>"
 
 targets:
   dev:

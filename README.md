@@ -24,6 +24,7 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 - **Lakeflow Connect ingestion**: routes recurring source→Delta ingestion (CDC, query-based, and foreign-catalog incl. Snowflake→Delta) to a DABs managed-ingestion pipeline (see [`references/lakeflow-connect.md`](references/lakeflow-connect.md))
 - **Snowflake operators**: federation (read), query-based foreign-catalog ingestion (recurring copy), or connector notebook — by intent
 - **Dataproc operators**: payload-aware conversion of Dataproc and Managed Spark jobs/batches to native Python, JAR, SQL, or R notebook tasks; cluster lifecycle and wait sensors collapse into Lakeflow Jobs semantics
+- **Serverless by default**: tasks run on serverless jobs compute unless the workload needs classic compute (R, Spark properties outside the serverless allowlist, init scripts, GPUs, custom containers, a source-configured cluster); classic runtime and node type are required variables, never guessed
 - Converts Airflow cron expressions and presets to Quartz cron format
 - Converts Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (`file_arrival`, `table_update`)
 - Extracts inline Python, SQL, and bash into standalone source files
@@ -189,17 +190,16 @@ Routes the nested Dataproc payload rather than the operator name: the PySpark su
 
 ## Post-Generation Configuration
 
-The generated bundle uses placeholders for environment-specific values. Replace these before deploying, or provide the values in your prompt to skip this step (e.g., "use warehouse ID abc123 and spark version 15.4.x-scala2.12").
+The generated bundle uses placeholders for environment-specific values. Replace these before deploying, or provide the values in your prompt to skip this step (e.g., "use warehouse ID abc123"). Tasks run on serverless compute unless the workload needs classic compute or you say the workspace has no serverless jobs compute.
 
 | Placeholder | Location | Example value |
 |---|---|---|
 | `<DEV_WORKSPACE_URL>` | `databricks.yml` → `targets.dev.workspace.host` | `https://my-dev.cloud.databricks.com` |
 | `<PROD_WORKSPACE_URL>` | `databricks.yml` → `targets.prod.workspace.host` | `https://my-prod.cloud.databricks.com` |
 | `<SERVICE_PRINCIPAL>` | `databricks.yml` → `targets.prod.run_as` | `my-deploy-sp` |
-| `<SPARK_VERSION>` | `databricks.yml` → `variables.spark_version` | `15.4.x-scala2.12` |
-| `<NODE_TYPE_ID>` | `databricks.yml` → `variables.node_type_id` | `i3.xlarge` (AWS), `Standard_D4s_v3` (Azure) |
-| `<NODE_TYPE_ID>` (GCP) | `databricks.yml` → `variables.node_type_id` | A workspace-supported GCP node type selected from `databricks clusters list-node-types`; Dataproc machine types are not copied or guessed |
-| `<WAREHOUSE_ID>` | `databricks.yml` → `variables.warehouse_id` | `abc123def456` |
+| `spark_version` (classic compute only) | Required bundle variable, no default: `--var spark_version=<value>` or a target's `variables` | A supported runtime from `databricks clusters spark-versions` |
+| `node_type_id` (classic compute only) | Required bundle variable, no default | A workspace-supported node type from `databricks clusters list-node-types`; Dataproc machine types are not copied or guessed |
+| `warehouse_id` (SQL tasks only) | Required bundle variable, no default | `abc123def456` |
 | `<WAREHOUSE_ID>` (factory mode) | `dbt_profiles/profiles.yml` → `http_path` | `/sql/1.0/warehouses/abc123def456` |
 | `<DBT_PROFILE_NAME>` (factory mode) | `dbt_profiles/profiles.yml` — must match `profile:` in `dbt_project.yml` | `orders_analytics` |
 | `<DEV_CATALOG>` / `<DEV_SCHEMA>` (factory mode) | `dbt_profiles/profiles.yml` → `catalog` / `schema` | `main` / `analytics` |

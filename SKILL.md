@@ -96,6 +96,12 @@ For each task in the inventory:
    - **dbt Cloud (`DbtCloudRunJobOperator`) never falls back to `dbt_task`** (dbt_task runs dbt Core and cannot trigger a dbt Cloud job) — route to Tier 4.
    - Surface the choice and its toolchain implications (PyDABs `python:` block, `pyproject.toml` + `.venv`, `Makefile`, `uv`) in the Phase 1 summary so the user can override before Phase 3.
 
+**Compute decision point**: Run tasks on serverless jobs compute by default.
+   - A task needs classic compute when its workload requires it: R, Spark properties outside the serverless allowlist, init scripts, GPUs, a custom container, or a cluster the source DAG configures (for example `DatabricksSubmitRunOperator` `new_cluster` or `DatabricksWorkflowTaskGroup` `job_clusters`).
+   - Otherwise ask once in the Phase 2 summary: "Does the target workspace have serverless jobs compute? (default: yes)". When the user doesn't know, use serverless and record the assumption.
+   - Serverless tasks omit `job_cluster_key`, `new_cluster`, and `existing_cluster_id`. Python script (`spark_python_task`), Python wheel, and dbt tasks also need an `environment_key` that references an entry in the job's `environments`.
+   - Classic tasks use a job cluster built from `${var.spark_version}` and `${var.node_type_id}`, both declared as required bundle variables with no default. Preserve a runtime or node type only when the source DAG specifies it; never copy or guess one from a template, example, or another cloud.
+
 For schedule conversion, read `references/schedule-trigger-mapping.md` in this skill's directory:
 - Convert Airflow 5-field cron to 6-field Quartz cron (prepend `0` for seconds, adjust day-of-week numbering, and normalize Sunday `0/7 -> 1`)
 - Convert Airflow presets (`@daily`, `@hourly`, etc.) to Quartz equivalents
@@ -176,14 +182,14 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
 
 **File generation rules:**
 
-1. **`databricks.yml`**: For multi-DAG, derive `bundle.name` from a user-provided name or the parent directory name. For single-DAG, derive from `dag_id` (kebab-case). Include `variables` for `spark_version`, `node_type_id`, `warehouse_id`. Define `dev` and `prod` targets. Use `include: - resources/*.yml` to pull in all job definitions. In factory mode, merge in `assets/templates/dbt-factory-databricks-additions.yml.tmpl` (the `python:` block — one `resources.<dag_module>_dbt_job:load_resources` entry per dbt-bearing DAG, where `<dag_module>` is the dag_id sanitized to a valid Python identifier — and `sync.include`).
+1. **`databricks.yml`**: For multi-DAG, derive `bundle.name` from a user-provided name or the parent directory name. For single-DAG, derive from `dag_id` (kebab-case). Declare `spark_version` and `node_type_id` only when a task runs on classic compute, and `warehouse_id` only when the bundle has a `sql_task`; declare each with no default so `databricks bundle validate` reports the value the user must supply. Define `dev` and `prod` targets. Use `include: - resources/*.yml` to pull in all job definitions. In factory mode, merge in `assets/templates/dbt-factory-databricks-additions.yml.tmpl` (the `python:` block — one `resources.<dag_module>_dbt_job:load_resources` entry per dbt-bearing DAG, where `<dag_module>` is the dag_id sanitized to a valid Python identifier — and `sync.include`).
 
 2. **`resources/<dag_id>_job.yml`**: One job resource file per DAG, each containing:
    - `schedule` or `trigger` from Phase 2
    - `email_notifications` from `default_args.email`
    - Job-level `timeout_seconds` from a static positive DAG `dagrun_timeout`
    - `parameters` from DAG `params` and Jinja variables like `{{ ds }}` (map `{{ ds }}`/`execution_date` to a `run_date` job parameter — classify wall-clock vs logical/partition semantics; for a logical date on a cron/scheduled job default it `{{job.trigger.time.iso_date}}` so native backfill can override the same parameter, but if code preserves an Airflow 2 previous-interval offset through a separate `trigger_date`, backfill must override `trigger_date` and leave `run_date` empty; on an event-triggered job derive the date from the event instead; ask the user when ambiguous — see `references/schedule-trigger-mapping.md`)
-   - `job_clusters` with a shared cluster definition
+   - Compute per the Phase 2 compute decision point: no cluster fields for serverless tasks, a job-level `environments` entry for serverless Python script/wheel/dbt tasks, and `job_clusters` only for classic tasks
    - `tasks` list with all mapped tasks, preserving the dependency graph via `depends_on`
    - Task-level `max_retries` and `min_retry_interval_millis` from `default_args.retries` and `retry_delay`
    - Task-level `timeout_seconds` from `default_args.execution_timeout`
@@ -211,6 +217,7 @@ Produce the following output files. Read `references/dab-schema-reference.md` in
    - Airflow Variables that need bundle variables or job parameters
    - `catchup=True` → the backfill expectation and which date/time parameter a native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) must override with `{{backfill.iso_date}}`; normally this is `run_date`, but a preserved Airflow 2 previous-interval offset must override the corresponding `trigger_date`/logical-instant parameter so replayed and scheduled runs use the same derivation; active `depends_on_past`, retry email, `sla`/`sla_miss_callback`, `max_consecutive_failed_dag_runs`, and non-empty `default_args.env` settings that need explicit replacement
    - Sensor-to-trigger conversions with notes on external location setup
+   - **Compute**: whether the workspace was confirmed or assumed to have serverless jobs compute, every task that runs on classic compute and why, the required `spark_version`/`node_type_id` values to supply, and how to switch a serverless task to classic (add `job_clusters`, set `job_cluster_key` on the task, declare both variables)
    - Every **collapsed retry envelope**: when multiple Airflow tasks or mapped stages become one Lakeflow task/job hop, identify the original retry boundaries, the new retry boundary, and the possible repeated side effects or expanded rerun scope
    - Setup/teardown lifecycle changes: Airflow teardown runs only after its setup succeeds, while an ordinary Lakeflow teardown task follows explicit dependencies and `run_if`; teardown failure affects the Lakeflow job result unless explicitly redesigned, whereas Airflow teardown failure is excluded from DAG-run status by default unless configured otherwise
    - **Cross-DAG dependency map**: which jobs reference other jobs via `run_job_task`, with resolved `${resources.jobs...}` substitutions
@@ -242,7 +249,7 @@ After generating all files:
 1. **Dependency check**: Verify every `depends_on` reference points to a valid `task_key` in the same job
 2. **Orphan check**: Verify no tasks are unreachable (disconnected from the DAG)
 3. **Task type check**: Verify each task has exactly one task type field
-4. **Compute check**: Serverless notebook tasks may omit ALL compute fields (an `environment_key` is optional, used to pin dependencies). For classic compute, verify `job_cluster_key`/`existing_cluster_id`/`new_cluster` is present, and that every referenced `job_cluster_key` or `environment_key` is defined on the job
+4. **Compute check**: Serverless notebook tasks omit ALL compute fields (an `environment_key` is optional, used to pin dependencies); serverless Python script, Python wheel, and dbt tasks must reference a defined `environment_key`. Every classic task has a workload reason or a user-confirmed no-serverless workspace, and `spark_version`/`node_type_id` are required variables with no default. For classic compute, verify `job_cluster_key`/`existing_cluster_id`/`new_cluster` is present, and that every referenced `job_cluster_key` or `environment_key` is defined on the job
 5. **Parameter check**: Verify all `{{job.parameters.*}}` references have corresponding entries in the job `parameters` list
 6. **Retained sensor semantics check**: Compare every retained file sensor's generated discovery with the original hook/callable. If the source prefix listing is recursive, a notebook that uses only a single shallow `dbutils.fs.ls(root)` is a validation error; require explicit directory traversal or equivalent paginated object-store discovery before accepting the bundle.
 7. **Bundle schema check**: Run `databricks bundle validate -t <target>` and fix schema warnings/errors (if auth is unavailable, run `databricks bundle schema` validation checks offline and report the limitation). An unassigned required bundle variable is an expected validate failure: report it as a value the user must supply, never resolve it by adding a default. In factory mode, complete step 8's setup/manifest sequence BEFORE this command -- validate executes the PyDABs hook, which needs the venv and manifest
@@ -316,8 +323,8 @@ Result: A Lakeflow Job with a native `spark_python_task`; the Dataproc cluster l
 <!-- contract: branch-datetime-dayofweek -->
 <!-- contract: bundles-product-name -->
 <!-- contract: constant-sensors -->
-<!-- contract: dataset-or-time-schedule -->
 <!-- contract: dataproc-payload-routing -->
+<!-- contract: dataset-or-time-schedule -->
 <!-- contract: dbt-intersected-selector -->
 <!-- contract: file-arrival-queue -->
 <!-- contract: lifecycle-retry-disclosure -->
@@ -327,5 +334,6 @@ Result: A Lakeflow Job with a native `spark_python_task`; the Dataproc cluster l
 <!-- contract: recursive-listing -->
 <!-- contract: required-var-not-a-fix -->
 <!-- contract: retained-sensor-poke -->
-<!-- contract: spark-python-plain-script -->
+<!-- contract: serverless-default-compute -->
 <!-- contract: soft-fail-condition-gate -->
+<!-- contract: spark-python-plain-script -->

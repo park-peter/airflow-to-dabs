@@ -80,14 +80,6 @@ bundle:
 include:
   - resources/*.yml
 
-variables:
-  spark_version:
-    description: Spark runtime version
-    default: "<SPARK_VERSION>"
-  node_type_id:
-    description: Cluster node type
-    default: "<NODE_TYPE_ID>"
-
 targets:
   dev:
     mode: development
@@ -123,16 +115,8 @@ resources:
         - name: source_table
           default: "bronze.raw_events"
 
-      job_clusters:
-        - job_cluster_key: etl-cluster
-          new_cluster:
-            spark_version: ${var.spark_version}
-            node_type_id: ${var.node_type_id}
-            num_workers: 2
-
       tasks:
         - task_key: extract
-          job_cluster_key: etl-cluster
           max_retries: 2
           min_retry_interval_millis: 300000
           notebook_task:
@@ -143,7 +127,6 @@ resources:
         - task_key: transform
           depends_on:
             - task_key: extract
-          job_cluster_key: etl-cluster
           max_retries: 2
           min_retry_interval_millis: 300000
           notebook_task:
@@ -152,7 +135,6 @@ resources:
         - task_key: load
           depends_on:
             - task_key: transform
-          job_cluster_key: etl-cluster
           max_retries: 2
           min_retry_interval_millis: 300000
           notebook_task:
@@ -262,13 +244,6 @@ resources:
         - name: env
           default: "dev"
 
-      job_clusters:
-        - job_cluster_key: validation-cluster
-          new_cluster:
-            spark_version: ${var.spark_version}
-            node_type_id: ${var.node_type_id}
-            num_workers: 1
-
       tasks:
         # "start" DummyOperator is omitted -- no upstream dependencies to rewire.
         # BranchPythonOperator becomes a condition_task.
@@ -282,7 +257,6 @@ resources:
           depends_on:
             - task_key: choose_validation
               outcome: "true"
-          job_cluster_key: validation-cluster
           notebook_task:
             notebook_path: ../src/full_validation.py
 
@@ -290,7 +264,6 @@ resources:
           depends_on:
             - task_key: choose_validation
               outcome: "false"
-          job_cluster_key: validation-cluster
           notebook_task:
             notebook_path: ../src/quick_validation.py
 
@@ -301,7 +274,6 @@ resources:
             - task_key: full_validation
             - task_key: quick_validation
           run_if: NONE_FAILED
-          job_cluster_key: validation-cluster
           notebook_task:
             notebook_path: ../src/publish_results.py
 ```
@@ -398,16 +370,8 @@ resources:
           min_time_between_triggers_seconds: 60
           wait_after_last_change_seconds: 60
 
-      job_clusters:
-        - job_cluster_key: processing-cluster
-          new_cluster:
-            spark_version: ${var.spark_version}
-            node_type_id: ${var.node_type_id}
-            num_workers: 2
-
       tasks:
         - task_key: ingest_file
-          job_cluster_key: processing-cluster
           notebook_task:
             notebook_path: ../src/ingest_file.py
 

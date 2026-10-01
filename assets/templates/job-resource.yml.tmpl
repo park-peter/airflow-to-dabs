@@ -53,19 +53,31 @@ resources:
       #   - name: run_date
       #     default: "{{job.trigger.time.iso_date}}"
 
-      # Shared cluster definition
-      job_clusters:
-        - job_cluster_key: main-cluster
-          new_cluster:
-            spark_version: ${var.spark_version}
-            node_type_id: ${var.node_type_id}
-            num_workers: 2
+      # Compute: tasks run on serverless by default and omit all cluster fields.
+      #
+      # Python script, Python wheel, and dbt tasks on serverless need an environment:
+      # environments:
+      #   - environment_key: Default
+      #     spec:
+      #       environment_version: "<ENVIRONMENT_VERSION>"
+      #       dependencies: []
+      #
+      # Classic compute, only when a task needs it (R, Spark properties outside the
+      # serverless allowlist, init scripts, GPUs, a custom container, a cluster configured
+      # in the source DAG) or the workspace has no serverless jobs compute. Declare
+      # spark_version and node_type_id in databricks.yml with no default, and set
+      # job_cluster_key: main-cluster on each classic task.
+      # job_clusters:
+      #   - job_cluster_key: main-cluster
+      #     new_cluster:
+      #       spark_version: ${var.spark_version}
+      #       node_type_id: ${var.node_type_id}
+      #       num_workers: 2
 
       tasks:
         # --- Task: <TASK_KEY> ---
         # Airflow operator: <OPERATOR_TYPE>
         - task_key: <TASK_KEY>
-          job_cluster_key: main-cluster
           # depends_on:
           #   - task_key: <UPSTREAM_TASK_KEY>
           notebook_task:

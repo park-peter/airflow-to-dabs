@@ -20,7 +20,7 @@ Set these values before deployment:
 
 | Setting | Location | Required Action |
 |---|---|---|
-| SQL warehouse | `variables.warehouse_id` | Replace `<WAREHOUSE_ID>` or pass `--var warehouse_id=<WAREHOUSE_ID>`. |
+| SQL warehouse | `variables.warehouse_id` | Required, no default: pass `--var warehouse_id=<WAREHOUSE_ID>` or set it in a target. |
 | Landing path | `variables.landing_path` | Point to a Unity Catalog volume or external location path for arriving order files. |
 | Checkpoint path | `variables.checkpoint_path` | Point to a writable Unity Catalog volume path outside the landing path. |
 | Production identity | `targets.prod.run_as.service_principal_name` | Replace `<SERVICE_PRINCIPAL_NAME>` with the production service principal. |

@@ -19,8 +19,8 @@ MIGRATION_NOTES.md
 The generated bundle is intended to be deployable with:
 
 ```bash
-databricks bundle validate -t dev
-databricks bundle deploy -t dev
+databricks bundle validate -t dev --var warehouse_id=<WAREHOUSE_ID>
+databricks bundle deploy -t dev --var warehouse_id=<WAREHOUSE_ID>
 ```
 
 In Databricks terms, the skill targets Lakeflow Jobs packaged with Databricks Declarative Automation Bundles (formerly Databricks Asset Bundles; DABs).
@@ -327,7 +327,7 @@ src/*.sql
 Then run:
 
 ```bash
-databricks bundle validate -t dev
+databricks bundle validate -t dev --var warehouse_id=<WAREHOUSE_ID>
 ```
 
 If workspace auth or required variables are not available locally, run the closest offline checks available and document that limitation.

@@ -60,11 +60,7 @@ customer_orders_bundle/
 
 From `customer_orders_bundle/`:
 
-```bash
-databricks bundle validate -t dev
-```
-
-Set real values before deploying:
+`warehouse_id` is a required variable, so validation and deployment both take it:
 
 ```bash
 databricks bundle validate -t dev --var warehouse_id=<WAREHOUSE_ID>
