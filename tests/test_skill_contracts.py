@@ -41,6 +41,7 @@ REQUIRED_CONTRACTS = frozenset(
         "dataset-or-time-schedule",
         "dataproc-payload-routing",
         "dbt-intersected-selector",
+        "serverless-default-compute",
     }
 )
 
@@ -160,6 +161,67 @@ def test_generated_job_template_enables_queueing_by_default():
     job = next(iter(template["resources"]["jobs"].values()))
 
     assert job["queue"] == {"enabled": True}
+
+
+_COMPUTE_FIELDS = ("job_cluster_key", "new_cluster", "existing_cluster_id")
+_ENVIRONMENT_TASKS = ("spark_python_task", "python_wheel_task", "dbt_task")
+
+
+def _tasks(node):
+    if isinstance(node, dict):
+        if any(key.endswith("_task") for key in node) and "task_key" in node:
+            yield node
+        for value in node.values():
+            yield from _tasks(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _tasks(value)
+
+
+def test_generated_templates_default_to_serverless_with_required_compute_variables():
+    bundle = yaml.safe_load(_text("assets/templates/databricks.yml.tmpl"))
+    job = next(iter(yaml.safe_load(_text("assets/templates/job-resource.yml.tmpl"))["resources"]["jobs"].values()))
+
+    for name in ("spark_version", "node_type_id", "warehouse_id"):
+        assert "default" not in bundle["variables"][name], f"{name} must be a required variable"
+    assert "job_clusters" not in job
+    assert not any(field in task for task in job["tasks"] for field in _COMPUTE_FIELDS)
+
+
+def test_no_placeholder_defaults_for_compute_or_warehouse_variables():
+    placeholder_default = re.compile(r'default:\s*"?<(SPARK_VERSION|NODE_TYPE_ID|WAREHOUSE_ID)>')
+    paths = [ROOT / "SKILL.md", ROOT / "README.md"]
+    paths += list((ROOT / "references").glob("*.md")) + list((ROOT / "assets" / "templates").glob("*.tmpl"))
+    paths += list((ROOT / "examples").glob("*/*_bundle/databricks.yml"))
+
+    for path in paths:
+        assert not placeholder_default.search(path.read_text(encoding="utf-8")), (
+            f"{path.relative_to(ROOT)} gives a compute or warehouse variable a placeholder default"
+        )
+
+
+def test_serverless_python_wheel_and_dbt_tasks_reference_an_environment():
+    documents = [
+        (relative_path, block)
+        for relative_path in ("references/dab-schema-reference.md", "references/operator-mapping.md",
+                              "references/conversion-examples.md", "references/dataproc-migration.md")
+        for block in _FENCED_YAML.findall(_text(relative_path))
+    ]
+    documents += [
+        (str(path.relative_to(ROOT)), path.read_text(encoding="utf-8"))
+        for path in (ROOT / "examples").glob("*/*_bundle/resources/*.yml")
+    ]
+
+    for relative_path, block in documents:
+        try:
+            parsed = yaml.safe_load(block)
+        except yaml.YAMLError:
+            continue
+        for task in _tasks(parsed):
+            if any(kind in task for kind in _ENVIRONMENT_TASKS) and not any(field in task for field in _COMPUTE_FIELDS):
+                assert "environment_key" in task, (
+                    f"{relative_path}: serverless task {task['task_key']} needs an environment_key"
+                )
 
 
 def test_operator_sections_declare_a_databricks_mapping():

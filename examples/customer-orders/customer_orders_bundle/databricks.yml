@@ -7,7 +7,6 @@ include:
 variables:
   warehouse_id:
     description: SQL warehouse ID used by sql_task data quality checks.
-    default: "<WAREHOUSE_ID>"
   catalog:
     description: Unity Catalog catalog for migrated tables.
     default: main
