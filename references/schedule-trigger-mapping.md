@@ -44,7 +44,7 @@ Prefer named days (`MON`..`SUN`) to avoid off-by-one conversion bugs.
 | Airflow Preset | Airflow Cron | Quartz Cron | Description |
 |---|---|---|---|
 | `@once` | N/A | *(no schedule, manual trigger)* | Run once. Remove schedule, trigger manually. |
-| `@continuous` | N/A | `continuous.pause_status: UNPAUSED` | Continuous execution mode. |
+| `@continuous` | N/A | `continuous.pause_status: PAUSED` | Continuous execution mode; unpause at cutover. |
 | `@hourly` | `0 * * * *` | `0 0 * * * ?` | Top of every hour |
 | `@daily` / `@midnight` | `0 0 * * *` | `0 0 0 * * ?` | Midnight daily |
 | `@weekly` | `0 0 * * 0` | `0 0 0 ? * 1` | Midnight Sunday |
@@ -75,12 +75,20 @@ Prefer named days (`MON`..`SUN`) to avoid off-by-one conversion bugs.
 schedule:
   quartz_cron_expression: "0 0 8 * * ?"
   timezone_id: "America/New_York"
-  pause_status: UNPAUSED                   # PAUSED or UNPAUSED
+  pause_status: PAUSED                     # unpause at cutover
 ```
+
+Generated jobs always start `PAUSED`. During the migration the Airflow DAG is still scheduled, so an unpaused job runs alongside it and repeats its writes. `MIGRATION_NOTES.md` carries the cutover step: pause or remove the Airflow DAG, then set `pause_status: UNPAUSED` (or unpause in the Jobs UI). The same applies to `trigger` and `continuous` blocks.
 
 ### Timezone Mapping
 
-Airflow timezone comes from `default_timezone` in `airflow.cfg` or the DAG's `start_date` timezone. Map to IANA timezone ID for DABs.
+The schedule's timezone is the timezone of the DAG's `start_date`, read from the DAG call or its resolved `default_args`. A naive `start_date` (no `tzinfo`), or no visible `start_date`, uses the deployment's `[core] default_timezone` from `airflow.cfg`, which is `utc` unless the site changed it; the DAG file cannot show that value. Ask for it. If it stays unknown, emit `timezone_id: "UTC"` and record in `MIGRATION_NOTES.md` that the timezone is assumed and must be checked against the Airflow deployment, because a wrong zone shifts every run by the offset. Map the result to an IANA timezone ID for DABs.
+
+| `start_date` form | Timezone source |
+|---|---|
+| `pendulum.datetime(..., tz="America/New_York")` or an aware `datetime` | The `tz`/`tzinfo` value |
+| Naive `datetime(...)` or `days_ago(...)` | `[core] default_timezone` (ask; `UTC` assumed and recorded when unknown) |
+| Only in shared `default_args` that were not provided | Unknown: ask for the module and the deployment's `default_timezone`; record the assumption |
 
 | Common Airflow Value | DABs `timezone_id` |
 |---|---|
@@ -235,6 +243,8 @@ item in `MIGRATION_NOTES.md`.
 
 ## Airflow `default_args` Mapping
 
+Resolve `default_args` before mapping it. When the DAG imports it from a shared module (`from libs.airflow_defaults import default_args`) or builds it from another dict, read that module and apply every module-level edit in the DAG file in order (`default_args['retries'] = 3`, `default_args.update(...)`, `{**base, "retries": 3}`). Keys set in the DAG file are known even when the base module is missing; keys only in the base module are unknown. Ask for the module. Until it is available, list each unknown key that changes behavior as a required action in `MIGRATION_NOTES.md`; never map an unreadable `default_args` as empty.
+
 Common `default_args` fields and their DABs equivalents:
 
 | Airflow `default_args` | DABs Equivalent |
@@ -247,17 +257,26 @@ Common `default_args` fields and their DABs equivalents:
 | `email_on_retry` | `False` is a no-op; active retry notifications have no Jobs event equivalent and must be noted in migration notes. Preserve any independently enabled failure notification. |
 | `depends_on_past` | `False` is a no-op; `True` has no cross-run task dependency equivalent and must be noted in migration notes. `max_concurrent_runs: 1` prevents overlap but does not preserve prior-run success semantics. |
 | `env` | An empty mapping is a no-op. Otherwise bind each value explicitly into the migrated task and move credentials or connection-derived values to Databricks secrets; never inline them. |
-| `start_date` | *(not needed -- DABs jobs start when deployed)* |
+| `start_date` | *(not needed -- DABs jobs start when deployed)*; its timezone sets `timezone_id` (see Timezone Mapping) |
 | `end_date` | *(no direct equivalent -- pause the schedule manually)* |
-| `execution_timeout` | `timeout_seconds` on task |
+| `execution_timeout` | `timeout_seconds` on task. With `retries > 0`, also set `retry_on_timeout: true`: Airflow retries a timed-out task, Databricks does not by default. |
+| `retry_exponential_backoff` / `max_retry_delay` | *(no equivalent -- Databricks retries at a fixed `min_retry_interval_millis`)*; record the timing change. |
+| `pool` / `pool_slots` / `priority_weight` / `weight_rule` | *(no equivalent)*. When a pool caps load on an external system, flag it and record the cap; `max_concurrent_runs` limits whole runs, not tasks across jobs. |
+| `on_failure_callback` | A notification (Slack, Teams, PagerDuty, email): `email_notifications.on_failure` or `webhook_notifications.on_failure` with a notification destination ID as a required variable. Any other side effect (audit row, ticket, cleanup): a task with `run_if: AT_LEAST_ONE_FAILED` depending on the tasks it covered. Read the callback's source to tell which. |
+| `on_success_callback` | Notification: `email_notifications.on_success` / `webhook_notifications.on_success`. Side effect: a final task with `run_if: ALL_SUCCESS`. |
+| `on_retry_callback` / `on_execute_callback` / `on_skipped_callback` | *(no equivalent per attempt; `webhook_notifications.on_start` covers run start only)*; flag. |
 | `sla` | *(no direct equivalent -- use monitoring/alerts)* |
-| `catchup` | `catchup=True` → use native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) to replay history (requires `{{ ds }}` mapped to a job parameter — see the execution-date section); `catchup=False` (the Airflow 3 default) → no backfill. Note the expectation in MIGRATION_NOTES.md. |
+| `catchup` | Unset means `[scheduler] catchup_by_default`: `True` in Airflow 2, `False` in Airflow 3; ask when the version or setting is unknown. `catchup=True` → use native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs) to replay history (requires `{{ ds }}` mapped to a job parameter — see the execution-date section); `catchup=False` (the Airflow 3 default) → no backfill. Note the expectation in MIGRATION_NOTES.md. |
 
 Related DAG-level settings:
 
 | Airflow DAG setting | DABs Equivalent |
 |---|---|
 | `dagrun_timeout` | A static positive `timedelta` maps to Job `timeout_seconds`. Dynamic values require manual resolution. |
+| `max_active_runs` | `max_concurrent_runs`. Unset means `[core] max_active_runs_per_dag` (16 by default), while Databricks defaults to 1: keep 1 with `queue.enabled: true` unless the DAG relied on overlapping runs, and record the change. |
+| `max_active_tasks` / `concurrency` | *(no per-job task-parallelism limit)*. Flag when the value is below the DAG's widest parallel stage and the limit protects an external system. |
+| `tags` | Job `tags`, one key per tag with an empty value (`navision: ""`); at most 25. |
+| DAG-level callbacks (`on_failure_callback`, `on_success_callback`) | Job-level `email_notifications` / `webhook_notifications`, or a final task, per the `default_args` rows above. |
 | `sla_miss_callback` | `None` is a no-op. An active arbitrary callback has no direct mapping; configure a Job `health.rules` `RUN_DURATION_SECONDS` threshold plus email/webhook notification when that preserves the intent, otherwise migrate the callback explicitly. |
 | `max_consecutive_failed_dag_runs` | `0` is a no-op. A positive automatic-pause threshold has no Jobs equivalent and requires external monitoring/control; do not substitute `max_concurrent_runs`, which governs overlap rather than failure history. |
 

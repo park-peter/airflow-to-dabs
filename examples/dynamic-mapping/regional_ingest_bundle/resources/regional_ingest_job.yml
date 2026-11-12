@@ -12,7 +12,7 @@ resources:
       # Airflow 3 schedule=[Asset(...)] with extra["databricks_table"] resolves to a
       # table_update trigger on that Unity Catalog table.
       trigger:
-        pause_status: UNPAUSED
+        pause_status: PAUSED
         table_update:
           condition: ANY_UPDATED
           table_names:

@@ -105,7 +105,7 @@ resources:
       schedule:
         quartz_cron_expression: "0 0 8 * * ?"
         timezone_id: "UTC"
-        pause_status: UNPAUSED
+        pause_status: PAUSED
 
       email_notifications:
         on_failure:
@@ -238,7 +238,7 @@ resources:
       schedule:
         quartz_cron_expression: "0 0 0 * * ?"
         timezone_id: "UTC"
-        pause_status: UNPAUSED
+        pause_status: PAUSED
 
       parameters:
         - name: env
@@ -516,7 +516,7 @@ resources:
       schedule:
         quartz_cron_expression: "0 0 6 ? * 2-6"
         timezone_id: "UTC"
-        pause_status: UNPAUSED
+        pause_status: PAUSED
 
       email_notifications:
         on_failure:
@@ -545,6 +545,7 @@ resources:
         - task_key: spark_ingest
           job_cluster_key: spark-cluster
           timeout_seconds: 7200
+          retry_on_timeout: true
           max_retries: 3
           min_retry_interval_millis: 600000
           spark_python_task:
@@ -561,6 +562,7 @@ resources:
             - task_key: spark_ingest
           job_cluster_key: spark-cluster
           timeout_seconds: 7200
+          retry_on_timeout: true
           max_retries: 3
           min_retry_interval_millis: 600000
           dbt_task:
@@ -579,6 +581,7 @@ resources:
             - task_key: dbt_transform
           job_cluster_key: spark-cluster
           timeout_seconds: 7200
+          retry_on_timeout: true
           max_retries: 3
           min_retry_interval_millis: 600000
           dbt_task:
@@ -595,6 +598,7 @@ resources:
           depends_on:
             - task_key: dbt_test
           timeout_seconds: 7200
+          retry_on_timeout: true
           max_retries: 3
           min_retry_interval_millis: 600000
           sql_task:
@@ -629,7 +633,7 @@ print("Pipeline complete")
 **Migration notes:**
 - `SparkSubmitOperator` `conf` values mapped to `job_clusters[].new_cluster.spark_conf`.
 - `{{ ds }}` replaced with `{{job.parameters.run_date}}` — a logical/partition date (passed as `--date`), so the parameter defaults to `{{job.trigger.time.iso_date}}` (the scheduled date), not `{{job.start_time.iso_date}}` (wall-clock). A native Databricks backfill overrides `run_date` with `{{backfill.iso_date}}` per replayed window. See `references/schedule-trigger-mapping.md`.
-- Airflow `execution_timeout=timedelta(hours=2)` mapped to `timeout_seconds: 7200` on each task.
+- Airflow `execution_timeout=timedelta(hours=2)` mapped to `timeout_seconds: 7200` on each task, with `retry_on_timeout: true` because Airflow retries a timed-out task.
 - `retries=3` mapped to `max_retries: 3`, `retry_delay=timedelta(minutes=10)` mapped to `min_retry_interval_millis: 600000`.
 - `end` (EmptyOperator) omitted -- `send_completion_notice` is the terminal task.
 - Airflow weekday schedule `0 6 * * 1-5` (Mon-Fri) converted to Quartz `0 0 6 ? * 2-6` (Mon=2 through Fri=6 in Quartz).

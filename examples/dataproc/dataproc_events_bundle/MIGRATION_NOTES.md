@@ -34,6 +34,7 @@
 |---|---|---|
 | `submit_events` retries separately from `wait_for_events` | `transform_events` reruns the full PySpark workload | A retry can repeat writes completed before failure |
 
+- `execution_timeout` with `retries=2` maps to `timeout_seconds: 7200` with `retry_on_timeout: true`, so a timed-out run is retried as it was in Airflow.
 - Airflow attempted cluster deletion under `all_done`. Jobs compute lifecycle is owned by the run; there is no explicit teardown task, and teardown cannot independently change the final job status.
 - `catchup=True` maps to native backfill. Leave `run_date` empty and override `trigger_date` with `{{backfill.iso_date}}` so replayed runs apply the same previous-day offset as scheduled runs.
 
@@ -46,3 +47,7 @@ This example deliberately targets Airflow 2 by using `schedule_interval`. For th
 | Scheduled | `run_date` remains empty; `trigger_date={{job.trigger.time.iso_date}}` | Previous calendar day |
 | Native backfill | `run_date` remains empty; `trigger_date={{backfill.iso_date}}` | Previous calendar day |
 | Explicit partition replay | `run_date=<date>`; `trigger_date` remains a valid ISO date | Exact `run_date` value |
+
+## Cutover
+
+`dataproc_events_job` and its schedule are deployed `PAUSED`. Pause or remove the Airflow DAG `dataproc_events` first, then unpause the job, so the two never run together.

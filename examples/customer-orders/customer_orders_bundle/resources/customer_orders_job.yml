@@ -13,7 +13,7 @@ resources:
       timeout_seconds: 7200
 
       trigger:
-        pause_status: UNPAUSED
+        pause_status: PAUSED
         file_arrival:
           url: ${var.landing_path}
           min_time_between_triggers_seconds: 300
@@ -51,6 +51,7 @@ resources:
           max_retries: 2
           min_retry_interval_millis: 300000
           timeout_seconds: 7200
+          retry_on_timeout: true
           notebook_task:
             notebook_path: ../src/ingest_bronze.py
             base_parameters:
@@ -66,6 +67,7 @@ resources:
           max_retries: 2
           min_retry_interval_millis: 300000
           timeout_seconds: 7200
+          retry_on_timeout: true
           notebook_task:
             notebook_path: ../src/transform_silver.py
             base_parameters:
@@ -105,6 +107,7 @@ resources:
           max_retries: 2
           min_retry_interval_millis: 300000
           timeout_seconds: 7200
+          retry_on_timeout: true
           notebook_task:
             notebook_path: ../src/full_validation.py
             base_parameters:
@@ -122,6 +125,7 @@ resources:
           max_retries: 2
           min_retry_interval_millis: 300000
           timeout_seconds: 7200
+          retry_on_timeout: true
           notebook_task:
             notebook_path: ../src/publish_gold.py
             base_parameters:

@@ -35,6 +35,7 @@ Set these values before deployment:
 | `schedule="0 6 * * *"` plus `S3KeySensor` | Replaced by event-driven file arrival. If a fixed 06:00 UTC schedule is required, use a schedule instead of the trigger and move file readiness into task code. |
 | `{{ ds }}` in `op_kwargs["run_date"]` | Mapped to the `run_date` job parameter (tasks use it as a logical/partition date, `WHERE order_date = :run_date`). Because this job is **file-arrival triggered**, there is no scheduled logical date, so `{{job.trigger.time}}` is not reliable; `run_date` defaults to `{{job.start_time.iso_date}}` as an approximation for the latest-arrival case. For strict correctness, derive the date from the arriving file path (`orders/<date>/…`); for exact historical windows, use backfill (below). If this were a **cron-scheduled** job instead, the default would be `{{job.trigger.time.iso_date}}` (the scheduled date). |
 | `catchup=False` | No backfill emitted. To replay history, use a native [Databricks backfill](https://docs.databricks.com/aws/en/jobs/backfill-jobs), overriding `run_date` with `{{backfill.iso_date}}` per replayed window (`run_date` is a job parameter for exactly this reason). |
+| `execution_timeout=timedelta(hours=2)` with `retries=2` | Task `timeout_seconds: 7200` with `retry_on_timeout: true`; Airflow retries a timed-out task, and Databricks retries a timeout only with this flag. |
 | `depends_on_past=False` | No equivalent emitted because the Airflow DAG explicitly disables this behavior. |
 | `email_on_retry=False` | No equivalent emitted. Job failure notification is preserved. |
 | `trigger_rule="none_failed_min_one_success"` | `run_if: NONE_FAILED` on `publish_gold` — an approximation. Lakeflow has no combined predicate, so the "at least one succeeded" clause is dropped: `publish_gold` **also runs if every upstream skipped**. Confirm that over-run is acceptable, or gate with a `condition_task`. |
@@ -60,3 +61,7 @@ databricks bundle deploy -t dev --var warehouse_id=<WAREHOUSE_ID>
 ```
 
 If Databricks authentication is not configured locally, YAML and structural checks can still be run offline with `yq` or another YAML parser, but full bundle validation requires a Databricks workspace profile or environment variables.
+
+## Cutover
+
+`customer_orders_lakeflow_job` and its file-arrival trigger are deployed `PAUSED`. Pause or remove the Airflow DAG `customer_orders_airflow` first, then unpause the job, so the two never run together.

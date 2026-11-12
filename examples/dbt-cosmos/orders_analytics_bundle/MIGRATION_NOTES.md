@@ -9,7 +9,7 @@ Converted from Airflow DAG `orders_analytics` (astronomer-cosmos) using dbt fact
 | `PythonOperator ingest_orders` | `notebook_task` (`src/ingest_orders.py`) | Callable body extracted. |
 | cosmos `DbtTaskGroup dbt_transform` | Separate Python-generated job (`resources/orders_analytics_dbt_job.py`) triggered via `run_job_task` | Cosmos renders dbt models as Airflow tasks at runtime from `manifest.json`; databricks-dbt-factory regenerates the same per-model task graph natively from the same manifest. The group is not translated task-by-task — the generator is swapped. |
 | `PythonOperator publish_metrics` | `notebook_task` (`src/publish_metrics.py`) | Callable body extracted. |
-| `schedule_interval="@daily"` | `schedule.quartz_cron_expression: 0 0 0 * * ?` (UTC) | |
+| `schedule_interval="@daily"` | `schedule.quartz_cron_expression: 0 0 0 * * ?` (UTC) | Timezone assumed; see Timezone below. |
 | `default_args.retries: 2` / `retry_delay: 5m` | Task-level `max_retries: 2`, `min_retry_interval_millis: 300000` | Applied to YAML-job notebook tasks. dbt job tasks rely on Lakeflow repair/rerun. |
 | `default_args.email` | `email_notifications.on_failure` | |
 | cosmos `DatabricksTokenProfileMapping` | `dbt_profiles/profiles.yml` with `DBT_HOST` / `DBT_ACCESS_TOKEN` injected by the runner notebook | No Airflow connection needed; the runner authenticates with the notebook's own credentials via the Databricks SDK. |
@@ -40,3 +40,11 @@ Static vars live in the committed `dbt_vars.json` at the bundle root (required; 
 - **One dbt project per bundle:** factory mode supports a single dbt project, colocated at the bundle root. Multiple dbt projects → split bundles.
 - **Large projects (1,000-task per-job limit):** one task per dbt node, and a Databricks job holds at most 1,000 tasks. Run `make task-count` to see unbundled vs bundled counts (this project: 6 unbundled / 5 bundled). If the unbundled count exceeds ~900, set `BUNDLE_TESTS = True` in `resources/orders_analytics_dbt_job.py` to collapse each resource's single-model tests into one `<resource>_test` task (coarser retry granularity: a model's tests rerun together). If over 1,000 even bundled, split by dbt tag into multiple factory jobs, await a dbt-factory sub-job API, or use a single `dbt_task`. The glue fails closed above 1,000 tasks at deploy time.
 - **Generated files:** `target/<target>/manifest.json` and `dbt_serverless_env.yaml` are git-ignored, so they are absent after a fresh clone. `make validate` and `make deploy` regenerate them — don't edit them by hand. To change dbt versions, edit the `pyproject.toml` pins and re-run `make setup`. Run `make test` to exercise the glue's selector-shape, vars, and fail-closed guards (pure-logic tests need no dbt; end-to-end tests run once a manifest exists).
+
+## Cutover
+
+`orders_analytics_job` and its schedule are deployed `PAUSED`. Pause or remove the Airflow DAG `orders_analytics` first, then unpause the job, so the two never run together.
+
+## Timezone
+
+The DAG's `start_date` is naive, so Airflow used the deployment's `[core] default_timezone`. The schedule assumes `UTC`; confirm the value in the Airflow deployment's `airflow.cfg` before cutover.

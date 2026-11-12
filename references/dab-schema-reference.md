@@ -20,18 +20,18 @@ variables:
     description: Databricks Runtime for classic job compute
   node_type_id:                            # only with classic job compute
     description: Workspace-supported node type for classic job compute
-  warehouse_id:                            # only with sql_task
-    description: SQL warehouse ID for SQL tasks
+  warehouse_id:                            # only with sql_task or a warehouse-backed dbt_task
+    description: SQL warehouse ID for SQL and dbt tasks
 
 targets:
   dev:
     mode: development
     workspace:
-      host: ${var.dev_workspace_url}
+      host: <DEV_WORKSPACE_URL>              # literal; auth fields do not interpolate variables
   prod:
     mode: production
     workspace:
-      host: ${var.prod_workspace_url}
+      host: <PROD_WORKSPACE_URL>
     run_as:
       service_principal_name: ${var.service_principal}
 ```
@@ -92,7 +92,7 @@ resources:
       schedule:
         quartz_cron_expression: "0 0 8 * * ?"
         timezone_id: "America/New_York"
-        pause_status: UNPAUSED
+        pause_status: PAUSED
 
       # OR Trigger (see Trigger section below)
       trigger:
@@ -568,7 +568,7 @@ Time-based scheduling using Quartz cron expressions (6-7 fields).
 schedule:
   quartz_cron_expression: "0 0 8 * * ?"     # Required. Seconds Minutes Hours DayOfMonth Month DayOfWeek [Year]
   timezone_id: "America/New_York"             # Required.
-  pause_status: UNPAUSED                      # PAUSED or UNPAUSED
+  pause_status: PAUSED                        # unpause at cutover
 ```
 
 **Quartz cron field order:** `Seconds Minutes Hours DayOfMonth Month DayOfWeek [Year]`
@@ -614,7 +614,7 @@ Use continuous mode for always-on execution semantics (`@continuous` in Airflow)
 
 ```yaml
 continuous:
-  pause_status: UNPAUSED
+  pause_status: PAUSED
 ```
 
 For periodic event triggers, use:
