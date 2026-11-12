@@ -29,6 +29,13 @@ Given an Airflow DAG file, the agent produces a complete bundle project — `dat
 - Converts Airflow sensors (S3, HDFS, file, table, external task) to DABs triggers (`file_arrival`, `table_update`)
 - Extracts inline Python, SQL, and bash into standalone source files
 - Converts Jinja template variables (`{{ ds }}`, `{{ params.x }}`) to DABs dynamic value references
+- **Shell dbt**: detects dbt run from `BashOperator`/`SSHOperator`, including `$DBT_PATH`-style binaries and `run-operation` macros, and maps it to `dbt_task` or factory mode
+- **Follows imported code**: resolves custom operators, callables, SQL constants, and shared `default_args` from the DAG's own codebase, and names any module that was not provided
+- **Host environment mapping**: `os.getenv` reads, `$VAR` references, `cwd`, and host paths become bundle variables, job parameters, or secrets, or are flagged
+- **Target platform migration**: asks whether each external warehouse (Snowflake, Redshift, BigQuery, ...) is also moving to Databricks, and re-points writes to Unity Catalog tables when it is
+- **Generated DAGs**: expands loops, `create_dag()` factories, and config-driven generators into one job per generated DAG
+- **Run policy**: maps `max_active_runs`, tags, callbacks, and timeout retries (`retry_on_timeout`), and flags pools, priority weights, and exponential backoff
+- **Safe cutover**: every generated schedule and trigger starts `PAUSED`, and the final summary reports `Ready to deploy: yes|no` with each blocker
 - **dbt factory mode (default for dbt workloads)**: converts dbt workloads — including [astronomer-cosmos](https://github.com/astronomer/astronomer-cosmos) `DbtDag`/`DbtTaskGroup` — into a separate Lakeflow job with one task per dbt model/seed/snapshot/test, generated at deploy time from the dbt manifest via PyDABs and [databricks-dbt-factory](https://github.com/mwojtyczka/databricks-dbt-factory); single `dbt_task` as fallback
 - Generates `MIGRATION_NOTES.md` documenting conversion decisions and manual action items
 - **Hadoop/HDFS migration support**: detects `spark-submit` in BashOperator/SSHOperator, cleans up YARN configs, maps HDFS paths, converts HiveQL, handles Sqoop alternatives
@@ -203,6 +210,8 @@ The generated bundle uses placeholders for environment-specific values. Replace 
 | `<WAREHOUSE_ID>` (factory mode) | `dbt_profiles/profiles.yml` → `http_path` | `/sql/1.0/warehouses/abc123def456` |
 | `<DBT_PROFILE_NAME>` (factory mode) | `dbt_profiles/profiles.yml` — must match `profile:` in `dbt_project.yml` | `orders_analytics` |
 | `<DEV_CATALOG>` / `<DEV_SCHEMA>` (factory mode) | `dbt_profiles/profiles.yml` → `catalog` / `schema` | `main` / `analytics` |
+
+Generated jobs deploy with `pause_status: PAUSED`. After the first successful run, pause or remove the Airflow DAG, then unpause the job. If `MIGRATION_NOTES.md` records an assumed timezone, check it against the Airflow deployment's `[core] default_timezone` first.
 
 > **Tip:** If you've already configured auth via `~/.databrickscfg` or `DATABRICKS_HOST`, you can remove `workspace.host` from targets entirely — the CLI picks it up automatically.
 

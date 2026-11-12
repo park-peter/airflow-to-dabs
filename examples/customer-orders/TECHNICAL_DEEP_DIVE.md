@@ -396,7 +396,7 @@ The generated Lakeflow Job uses:
 queue:
   enabled: true
 trigger:
-  pause_status: UNPAUSED
+  pause_status: PAUSED
   file_arrival:
     url: ${var.landing_path}
     min_time_between_triggers_seconds: 300

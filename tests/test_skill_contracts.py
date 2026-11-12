@@ -42,6 +42,17 @@ REQUIRED_CONTRACTS = frozenset(
         "dataproc-payload-routing",
         "dbt-intersected-selector",
         "serverless-default-compute",
+        "shared-default-args",
+        "dbt-shell-command-word",
+        "resolve-imported-code",
+        "host-environment-references",
+        "default-timezone-disclosure",
+        "paused-cutover",
+        "ready-to-deploy-summary",
+        "target-platform-migration",
+        "parse-time-dag-generation",
+        "worker-runtime-dependencies",
+        "policy-settings-mapping",
     }
 )
 
@@ -392,3 +403,163 @@ def test_no_superseded_terms_remain():
         body = path.read_text(encoding="utf-8")
         for term in superseded:
             assert term not in body, f"{path.relative_to(ROOT)} still references '{term}'"
+
+
+_EXAMPLE_BUNDLES = sorted((ROOT / "examples").glob("*/*_bundle"))
+_SCHEDULE_BLOCKS = ("schedule", "trigger", "continuous")
+
+
+def _documented_yaml():
+    for relative_path in ("references/dab-schema-reference.md", "references/operator-mapping.md",
+                          "references/conversion-examples.md", "references/schedule-trigger-mapping.md",
+                          "references/dataproc-migration.md", "references/lakeflow-connect.md",
+                          "examples/customer-orders/TECHNICAL_DEEP_DIVE.md"):
+        for block in _FENCED_YAML.findall(_text(relative_path)):
+            yield relative_path, block
+    for bundle in _EXAMPLE_BUNDLES:
+        for path in (bundle / "resources").glob("*.yml"):
+            yield str(path.relative_to(ROOT)), path.read_text(encoding="utf-8")
+
+
+def _blocks_with_pause_status(node):
+    if isinstance(node, dict):
+        if "pause_status" in node:
+            yield node["pause_status"]
+        for value in node.values():
+            yield from _blocks_with_pause_status(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _blocks_with_pause_status(value)
+
+
+def test_generated_schedules_and_triggers_start_paused():
+    seen = 0
+    for relative_path, block in _documented_yaml():
+        try:
+            parsed = yaml.safe_load(block)
+        except yaml.YAMLError:
+            continue
+        for status in _blocks_with_pause_status(parsed):
+            seen += 1
+            assert status == "PAUSED", f"{relative_path}: generated jobs must start PAUSED, found {status}"
+    assert seen, "no pause_status found in documented or example YAML"
+
+    template = _text("assets/templates/job-resource.yml.tmpl")
+    assert "pause_status: PAUSED" in template
+    assert "UNPAUSED" not in template
+
+
+def test_example_notes_carry_a_cutover_step():
+    for bundle in _EXAMPLE_BUNDLES:
+        notes = (bundle / "MIGRATION_NOTES.md").read_text(encoding="utf-8")
+        assert "## Cutover" in notes, f"{bundle.relative_to(ROOT)} has no cutover step"
+
+
+def _dag_start_date(tree: ast.AST) -> ast.expr | None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) in ("DAG", "dag"):
+            for keyword in node.keywords:
+                if keyword.arg == "start_date":
+                    return keyword.value
+    return None
+
+
+def _start_date_is_aware(value: ast.expr | None) -> bool:
+    if not isinstance(value, ast.Call):
+        return False
+    function = getattr(value.func, "attr", getattr(value.func, "id", ""))
+    keywords = {keyword.arg for keyword in value.keywords}
+    return (function == "datetime" and bool(keywords & {"tzinfo", "tz"})) or (
+        isinstance(value.func, ast.Attribute) and getattr(value.func.value, "id", "") == "pendulum"
+    )
+
+
+def test_examples_disclose_an_assumed_timezone():
+    for example in sorted((ROOT / "examples").iterdir()):
+        bundles = list(example.glob("*_bundle"))
+        dags = list((example / "airflow").glob("*.py"))
+        if not bundles or not dags:
+            continue
+        jobs = [yaml.safe_load(path.read_text(encoding="utf-8")) for path in (bundles[0] / "resources").glob("*.yml")]
+        scheduled = any("schedule" in job for doc in jobs for job in doc.get("resources", {}).get("jobs", {}).values())
+        if not scheduled:
+            continue
+        start_date = _dag_start_date(ast.parse(dags[0].read_text(encoding="utf-8")))
+        if _start_date_is_aware(start_date):
+            continue
+        notes = (bundles[0] / "MIGRATION_NOTES.md").read_text(encoding="utf-8")
+        assert "default_timezone" in notes, f"{example.name}: schedule timezone is assumed but not disclosed"
+
+
+def test_dbt_factory_table_routes_run_operation_outside_the_factories():
+    operator_mapping = _text("references/operator-mapping.md")
+    [row] = [line for line in operator_mapping.splitlines() if line.startswith("| `run-operation")]
+
+    assert "not a manifest node" in row
+    assert "not factory-eligible" in row
+
+
+def test_documented_dbt_tasks_carry_no_host_references():
+    for relative_path, block in _documented_yaml():
+        try:
+            parsed = yaml.safe_load(block)
+        except yaml.YAMLError:
+            continue
+        for task in _tasks(parsed):
+            dbt = task.get("dbt_task")
+            if not dbt:
+                continue
+            assert not any("$" in command for command in dbt.get("commands", [])), (
+                f"{relative_path}: {task['task_key']} keeps a host variable in a dbt command"
+            )
+            assert not str(dbt.get("project_directory", "")).startswith("/"), (
+                f"{relative_path}: {task['task_key']} uses an absolute host project_directory"
+            )
+
+
+def test_workspace_host_is_never_interpolated():
+    interpolated_host = re.compile(r"^\s*host:\s*\$\{", re.MULTILINE)
+    paths = [ROOT / "SKILL.md", ROOT / "README.md"]
+    paths += list((ROOT / "references").glob("*.md")) + list((ROOT / "assets" / "templates").glob("*.tmpl"))
+    paths += list((ROOT / "examples").glob("*/*_bundle/databricks.yml"))
+
+    for path in paths:
+        assert not interpolated_host.search(path.read_text(encoding="utf-8")), (
+            f"{path.relative_to(ROOT)} interpolates workspace.host, which the CLI rejects"
+        )
+
+
+def test_documented_timeouts_with_retries_also_retry_on_timeout():
+    for relative_path, block in _documented_yaml():
+        try:
+            parsed = yaml.safe_load(block)
+        except yaml.YAMLError:
+            continue
+        for task in _tasks(parsed):
+            if task.get("timeout_seconds") and task.get("max_retries"):
+                assert task.get("retry_on_timeout") is True, (
+                    f"{relative_path}: {task['task_key']} retries but would not retry a timeout"
+                )
+
+
+def _mapping_rows(relative_path: str) -> dict[str, str]:
+    rows = {}
+    for line in _text(relative_path).splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if line.startswith("| `") and len(cells) >= 2:
+            rows[cells[0]] = cells[1]
+    return rows
+
+
+def test_run_policy_settings_have_a_documented_mapping():
+    rows = _mapping_rows("references/schedule-trigger-mapping.md")
+
+    assert "max_concurrent_runs" in rows["`max_active_runs`"]
+    assert "Job `tags`" in rows["`tags`"]
+    assert "retry_on_timeout: true" in rows["`execution_timeout`"]
+    assert "webhook_notifications.on_failure" in rows["`on_failure_callback`"]
+    assert "Airflow 2" in rows["`catchup`"]
+    for setting in ("`retry_exponential_backoff` / `max_retry_delay`",
+                    "`pool` / `pool_slots` / `priority_weight` / `weight_rule`",
+                    "`max_active_tasks` / `concurrency`"):
+        assert "no " in rows[setting] and "equivalent" in rows[setting] or "no per-job" in rows[setting], setting

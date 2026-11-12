@@ -65,3 +65,7 @@ If Databricks auth is not configured locally, run a structural check against the
 databricks bundle schema > /tmp/bundle.schema.json
 # then validate databricks.yml + resources/*.yml against /tmp/bundle.schema.json
 ```
+
+## Cutover
+
+`regional_ingest_job` and its table-update trigger are deployed `PAUSED`. Pause or remove the Airflow DAG `regional_ingest` first, then unpause the job, so the two never run together.

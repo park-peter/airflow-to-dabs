@@ -46,3 +46,11 @@ DATABRICKS_PROFILE=<profile> ./verify.sh                # + full `bundle validat
 ```
 
 Full deploy additionally requires the UC connection to exist and Snowflake to be reachable.
+
+## Cutover
+
+`orders_replication_job` and its schedule are deployed `PAUSED`. Pause or remove the Airflow DAG `orders_replication` first, then unpause the job, so the two never run together.
+
+## Timezone
+
+The DAG sets no `start_date`, so Airflow used the deployment's `[core] default_timezone`. The schedule assumes `UTC`; confirm the value in the Airflow deployment's `airflow.cfg` before cutover.

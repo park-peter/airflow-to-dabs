@@ -63,6 +63,42 @@ file that is itself an external contract; required UC connection + networking kn
 release state is acceptable — and for a **Private Preview** connector, **confirmed workspace
 enrollment/entitlement**, not just user acceptance. Full rules in `references/lakeflow-connect.md`.
 
+#### Target platform migration
+
+Source-aware classification assumes each external system stays where it is. Often the warehouse a DAG writes to is moving to Databricks at the same time as the orchestrator (dbt models already converted from Snowflake SQL to Databricks SQL are the usual sign). Ask once per external warehouse whether it is migrating, and route by the answer:
+
+| Answer | Writes into the warehouse | Reads from the warehouse | Its Airflow connection |
+|---|---|---|---|
+| Migrating | Write the mapped Unity Catalog table (`database.schema` → `catalog.schema` from a required mapping) | Read the migrated UC table | Dropped |
+| Staying | Connector or JDBC notebook writing to it | Federation over a foreign catalog, or a connector read | UC connection or secret |
+| Unknown | Manual review | Manual review | Recorded as unresolved |
+
+A custom operator that moves rows from a source system into the warehouse (query a database, append to a landing table) is then classified by its **source**: the destination is the UC landing table when the warehouse is migrating. Keep the source query in its own dialect when it still runs on the source engine:
+
+```python
+# Databricks notebook source
+from pyspark.sql import functions as F
+
+from sql_queries.navision.queries import service_object_query  # module copied into src/
+
+dbutils.widgets.text("landing_table", "")
+dbutils.widgets.text("jdbc_url_secret_key", "")
+
+source_query = service_object_query  # T-SQL, executed by SQL Server unchanged
+
+df = (
+    spark.read.format("jdbc")
+    .option("url", dbutils.secrets.get("navision", dbutils.widgets.get("jdbc_url_secret_key")))
+    .option("query", source_query)
+    .load()
+)
+df.withColumn("PROCESS_TIME", F.current_timestamp()).write.mode("append").saveAsTable(
+    dbutils.widgets.get("landing_table")
+)
+```
+
+The source's JDBC driver must be available on the task's compute; confirm it for serverless, or use Lakehouse Federation when the source is a supported federation source. Record what changes: values computed by the source engine (`GETDATE()`, `CURRENT_TIMESTAMP`) stay in the source server's time zone, while columns the operator added in Python (`PROCESS_TIME` from `pd.to_datetime("now")`) now come from the Databricks session time zone. Pandas type fixes the operator applied (integer columns with nulls) become Spark schema decisions. When the source is eligible and the operator's append semantics are not a downstream contract, offer Lakeflow Connect or federation as the alternative.
+
 ---
 
 ## Deferrable operators and sensors (any Airflow version)
@@ -136,6 +172,19 @@ target_path = dbutils.widgets.get("target_path")
 df = spark.read.table(source_table)
 df.write.format("delta").save(target_path)
 ```
+
+#### Imported callables and bound methods
+
+When `python_callable` is not a `def` in the DAG file, resolve it before generating the notebook:
+
+| Callable form | Generated notebook |
+|---|---|
+| Function imported from the DAG's codebase (`from scripts.load import run`) | Copy the module into `src/` (keep its package path) and call `run(**kwargs)`. |
+| Method on an object built at DAG-parse time (`DQ(ENV, "udp_dim_aircraft").check_all`) | Copy the class's module, construct the object in the notebook with the same arguments, and call the method. Arguments read from the Airflow host at parse time (`ENV = os.getenv(...)`) become task parameters bound to bundle variables, set per target. |
+| `functools.partial`, a lambda, or a factory result | Inline the bound arguments as `base_parameters` and call the underlying function. |
+| Module not among the provided files | Manual review. Name the module in `MIGRATION_NOTES.md` and ask for it; do not generate a notebook that guesses its behavior. |
+
+Running the object's constructor in the notebook moves its side effects (connections, config reads) from Airflow's parse time to task run time; record that in `MIGRATION_NOTES.md` when the constructor does more than store arguments.
 
 #### TaskFlow dependency extraction
 
@@ -270,7 +319,16 @@ Call `list_files_recursive(source_path)` inside every polling attempt, then appl
 
 **DABs task type:** `notebook_task` (general) or `spark_python_task` / `spark_jar_task` (if wrapping `spark-submit`)
 
-For general bash commands, wrap in a notebook using `subprocess.run()`. **If the `bash_command` contains a `spark-submit` invocation**, parse it and convert to a proper `spark_python_task` or `spark_jar_task` instead. See `references/hadoop-migration-guide.md` for spark-submit detection and YARN config cleanup.
+For general bash commands, wrap in a notebook using `subprocess.run()`. **If the `bash_command` contains a `spark-submit` invocation**, parse it and convert to a proper `spark_python_task` or `spark_jar_task` instead. See `references/hadoop-migration-guide.md` for spark-submit detection and YARN config cleanup. **If the command word of any segment is dbt** (bare `dbt`, a path ending in `/dbt`, or `$DBT_PATH`-style variable), it is a dbt workload; see the shell dbt rules in the dbt section below.
+
+Carry the operator's execution context into the notebook:
+
+| Airflow argument or reference | Databricks mapping |
+|---|---|
+| `cwd` | A bundle-relative working directory passed as a widget (`${workspace.file_path}/...`), or the synced directory that replaces the host path. An absolute host path (`/home/...`, `/opt/...`) is never copied as-is. |
+| `env` / `append_env` | Explicit `env=` for `subprocess.run`: start from `os.environ` when `append_env=True`, otherwise only the listed keys. Credential values come from `dbutils.secrets.get()`. |
+| `$VAR` / `${VAR}` in the command | Set the variable in the subprocess `env` from a bundle variable, job parameter, or secret; replace it with the Databricks equivalent (a dbt binary path becomes `dbt_task`); or flag it. An unset variable expands to an empty string and breaks the command at run time. |
+| `skip_on_exit_code` (default `99`) | Exit code that marked the Airflow task skipped. A notebook has no skipped state: set a task value and gate downstream tasks with a `condition_task`, or flag. |
 
 **Airflow:**
 
@@ -302,6 +360,29 @@ print(result.stdout)
 if result.returncode != 0:
     raise RuntimeError(f"Command failed: {result.stderr}")
 ```
+
+With a working directory and an environment variable (`cwd="/home/ec2-user/etl"`, `bash_command="$LOADER --full"`, where `LOADER` was set on the Airflow host), the notebook receives both explicitly:
+
+```python
+# Databricks notebook source
+import os
+import subprocess
+
+dbutils.widgets.text("workdir", "")
+dbutils.widgets.text("loader", "")
+
+result = subprocess.run(
+    ["bash", "-c", '"$LOADER" --full'],
+    cwd=dbutils.widgets.get("workdir"),
+    env={**os.environ, "LOADER": dbutils.widgets.get("loader")},
+    capture_output=True, text=True,
+)
+print(result.stdout)
+if result.returncode != 0:
+    raise RuntimeError(f"Command failed: {result.stderr}")
+```
+
+`workdir` and `loader` are `base_parameters` bound to bundle variables with no default; `MIGRATION_NOTES.md` records the host path and variable they replace.
 
 ---
 
@@ -767,6 +848,7 @@ Factory mode changes the bundle toolchain: it adds a PyDABs `python:` block, a `
 | `dbt test` | `test` |
 | `dbt build` | `model`, `seed`, `snapshot`, `test` |
 | `deps`/`docs` only | not factory-eligible — use the single-`dbt_task` fallback |
+| `run-operation <macro>` | none — a macro is not a manifest node. Interleaved with node commands or ordered relative to specific nodes: not factory-eligible, use `dbt_task`. Only before or only after the whole node workload: a `dbt_task` before or after the factory `run_job_task` hop. |
 | Multiple commands | union of the above |
 
 databricks-dbt-factory addresses each node with an intersected selector — its `fqn:` plus `package:`, `file:`, `resource_type:` and (for generic tests) `test_name:` terms, comma-joined as dbt's AND — emits one task per dbt test (including unit tests), and derives readable task keys (`<resource>_<type>`, e.g. `orders_model`/`countries_seed`; bundled tests keyed `<resource>_test`) that are guaranteed unique and ≤100 chars. The factory validates every selector against dbt's own grammar and refuses to emit one it cannot address exactly. The glue post-processes the output: it prunes `depends_on` references to omitted node types (the factory emits dangling dependencies when a node type has no factory), confirms the emitted task keys are unique, and fails closed above the 1,000-task per-job limit. The runner rejects any dbt command carrying its own `--vars` (both `--vars <yaml>` and `--vars=<yaml>`) — vars must use the canonical `dbt_vars.json`/`dbt_vars` channel.
@@ -832,7 +914,65 @@ environments:
         - "dbt-databricks>=1.0.0,<2.0.0"
 ```
 
-Also treat `BashOperator`/`SSHOperator` commands matching `dbt (deps|seed|snapshot|run|test|build)` as dbt workloads subject to this decision point.
+#### Shell dbt (`BashOperator` / `SSHOperator`)
+
+Treat a shell task as a dbt workload when the command word of any segment (split on `&&`, `;`, `|`, newlines) is dbt: a bare `dbt`, a path ending in `/dbt`, or a variable reference such as `$DBT_PATH` or `${DBT_BIN}`, followed by a dbt subcommand (`deps`, `seed`, `snapshot`, `run`, `test`, `build`, `run-operation`, `source freshness`, `compile`, `docs`). Resolve commands assigned to module-level variables before matching. The project directory is `--project-dir` when given, else the operator's `cwd`, else a preceding `cd`. Copy the project into the bundle and point `project_directory` at its bundle-relative path; the host path itself is never copied.
+
+**Airflow** (a snapshot → run → two macros chain, the dbt binary set on the Airflow host):
+
+```python
+run_dbt_snapshot_task = BashOperator(
+    task_id="run_dbt_snapshot_task",
+    bash_command="$DBT_PATH snapshot --select snp_dim_aircraft.sql",
+    cwd="/home/ec2-user/airflow/intelsat_ca",
+)
+run_dbt_aircraft_task = BashOperator(
+    task_id="run_dbt_aircraft_task",
+    bash_command="$DBT_PATH run --select dim_aircraft.sql",
+    cwd="/home/ec2-user/airflow/intelsat_ca",
+)
+update_statuses = BashOperator(
+    task_id="run_dbt_dim_aircraft_update_status_columns",
+    bash_command="$DBT_PATH run-operation update_dim_aircraft_statuses",
+    cwd="/home/ec2-user/airflow/intelsat_ca",
+)
+run_dbt_snapshot_task >> run_dbt_aircraft_task >> update_statuses
+```
+
+The tasks select specific nodes and interleave `run-operation` macros, so factory mode does not apply. Each Airflow task becomes its own `dbt_task`, keeping its retry boundary; `$DBT_PATH` and the host `cwd` are dropped because `dbt_task` supplies dbt and syncs the project. Here the project was provided and copied into the bundle at `intelsat_ca/`; when it is not provided, `project_directory` is a required bundle variable instead:
+
+```yaml
+- task_key: run_dbt_snapshot_task
+  environment_key: dbt_env
+  dbt_task:
+    commands:
+      - "dbt deps"
+      - "dbt snapshot --select snp_dim_aircraft.sql"
+    project_directory: ../intelsat_ca
+    warehouse_id: ${var.warehouse_id}
+- task_key: run_dbt_aircraft_task
+  depends_on:
+    - task_key: run_dbt_snapshot_task
+  environment_key: dbt_env
+  dbt_task:
+    commands:
+      - "dbt deps"
+      - "dbt run --select dim_aircraft.sql"
+    project_directory: ../intelsat_ca
+    warehouse_id: ${var.warehouse_id}
+- task_key: run_dbt_dim_aircraft_update_status_columns
+  depends_on:
+    - task_key: run_dbt_aircraft_task
+  environment_key: dbt_env
+  dbt_task:
+    commands:
+      - "dbt deps"
+      - "dbt run-operation update_dim_aircraft_statuses"
+    project_directory: ../intelsat_ca
+    warehouse_id: ${var.warehouse_id}
+```
+
+Keep `dbt deps` only when the project declares packages. Merging the chain into one `dbt_task` with an ordered `commands` list is valid but collapses the retry envelopes; record that in `MIGRATION_NOTES.md`. Environment variables the dbt project itself reads (`env_var()` in `profiles.yml` or models) are host environment references: map them to the `dbt_task` environment or to secrets, or flag them.
 
 ---
 
@@ -1983,7 +2123,7 @@ These operators have no direct DABs equivalent. Flag them in `MIGRATION_NOTES.md
 
 | Airflow Operator | Suggested Fallback | Notes |
 |---|---|---|
-| Custom `BaseOperator` subclass | `notebook_task` | Extract operator logic into a notebook. Review `execute()` method. |
+| Custom `BaseOperator` subclass | Route by what `execute()` does; else `notebook_task` | Resolve the import and read `execute()`; it is the operator's real contract. Record the connections, target tables, write mode, and added columns it hardcodes, even when they ignore constructor arguments (an operator that takes `snowflake_connection=` but calls `BaseHook.get_connection("snowflake_connection")`). Then apply source-aware classification to that behavior: a query-and-append from a remote database is an ingestion task, not opaque Python. Source module not provided: manual review, naming the module. |
 | `HttpSensor` / `SimpleHttpOperator` | `notebook_task` wrapping `requests` | Use a notebook with the `requests` library for HTTP calls. |
 | `LivyOperator` | `spark_python_task` or `notebook_task` | Livy is unnecessary on Databricks; submit Spark code directly. See `hadoop-migration-guide.md`. |
 | `SqoopOperator` (import) | Lakeflow Connect pipeline | Managed RDBMS-to-lakehouse ingestion. A cursor `--incremental` (`append`/`lastmodified`) maps to **query-based** ingestion, NOT CDC; reserve CDC for a true log-based source. Not a DABs task -- create a pipeline resource. See `hadoop-migration-guide.md`. |
